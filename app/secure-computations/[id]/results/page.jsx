@@ -34,6 +34,7 @@ import {
   Legend,
   Filler
 } from 'chart.js';
+import SecureAnalysisChartsSection from './SecureAnalysisChartsSection';
 
 // Register Chart.js components
 ChartJS.register(
@@ -215,7 +216,7 @@ export default function ResultsVisualizationPage() {
   };
 
   const generateCorrelationChart = () => {
-    if (!result.correlation_coefficient) return null;
+    if (!result?.correlation_coefficient) return null;
 
     const correlation = Number(result.correlation_coefficient);
     const strength = Math.abs(correlation);
@@ -240,7 +241,7 @@ export default function ResultsVisualizationPage() {
   };
 
   const generateTimeSeriesChart = () => {
-    if (!result.time_series_data) return null;
+    if (!result?.time_series_data) return null;
 
     const timeData = result.time_series_data;
     return {
@@ -260,40 +261,128 @@ export default function ResultsVisualizationPage() {
     };
   };
 
+  const generateThresholdDistributionChart = () => {
+    if (!result || !Array.isArray(result.patient_records) || result.patient_records.length === 0) return null;
+
+    const below = result.patient_records.filter(p => !p.above_threshold).length;
+    const above = result.patient_records.filter(p => p.above_threshold).length;
+
+    if (above + below === 0) return null;
+
+    return {
+      labels: ['Below Threshold', 'Above Threshold'],
+      datasets: [{
+        data: [below, above],
+        backgroundColor: [
+          'rgba(34, 197, 94, 0.8)',
+          'rgba(239, 68, 68, 0.8)'
+        ],
+        borderColor: [
+          'rgba(34, 197, 94, 1)',
+          'rgba(239, 68, 68, 1)'
+        ],
+        borderWidth: 2
+      }]
+    };
+  };
+
+  const generateRiskLevelChart = () => {
+    if (!result || !Array.isArray(result.patient_records) || result.patient_records.length === 0) return null;
+
+    const counts = {};
+    result.patient_records.forEach(p => {
+      const levelRaw = (p.risk_level || 'unknown').toString();
+      const levelKey = levelRaw.toLowerCase();
+      counts[levelKey] = (counts[levelKey] || 0) + 1;
+    });
+
+    const labels = Object.keys(counts).map(key => {
+      return key
+        .split('_')
+        .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+        .join(' ');
+    });
+    const values = Object.values(counts);
+
+    if (labels.length === 0) return null;
+
+    return {
+      labels,
+      datasets: [{
+        label: 'Patients by Risk Level',
+        data: values,
+        backgroundColor: [
+          'rgba(59, 130, 246, 0.8)',
+          'rgba(34, 197, 94, 0.8)',
+          'rgba(249, 115, 22, 0.8)',
+          'rgba(239, 68, 68, 0.8)',
+          'rgba(148, 163, 184, 0.8)'
+        ],
+        borderColor: [
+          'rgba(59, 130, 246, 1)',
+          'rgba(34, 197, 94, 1)',
+          'rgba(249, 115, 22, 1)',
+          'rgba(239, 68, 68, 1)',
+          'rgba(148, 163, 184, 1)'
+        ],
+        borderWidth: 2,
+        borderRadius: 8,
+        borderSkipped: false,
+      }]
+    };
+  };
+
   const chartOptions = {
     responsive: true,
     maintainAspectRatio: false,
     plugins: {
       legend: {
-        position: 'top',
+        position: 'bottom',
         labels: {
           usePointStyle: true,
-          padding: 20
-        }
+          padding: 16,
+        },
       },
       tooltip: {
-        backgroundColor: 'rgba(0, 0, 0, 0.8)',
+        backgroundColor: 'rgba(15, 23, 42, 0.9)',
         titleColor: '#fff',
-        bodyColor: '#fff',
-        borderColor: 'rgba(255, 255, 255, 0.1)',
-        borderWidth: 1,
-        cornerRadius: 8,
-        displayColors: true
-      }
+        bodyColor: '#e5e7eb',
+        borderColor: 'transparent',
+        borderWidth: 0,
+        cornerRadius: 10,
+        displayColors: true,
+      },
+    },
+    elements: {
+      line: {
+        tension: 0.4,
+      },
+      bar: {
+        borderRadius: 12,
+        borderSkipped: false,
+      },
     },
     scales: {
       y: {
         beginAtZero: true,
         grid: {
-          color: 'rgba(0, 0, 0, 0.1)'
-        }
+          color: 'rgba(148,163,184,0.15)',
+          drawBorder: false,
+        },
+        ticks: {
+          color: '#9ca3af',
+        },
       },
       x: {
         grid: {
-          color: 'rgba(0, 0, 0, 0.1)'
-        }
-      }
-    }
+          color: 'rgba(148,163,184,0.08)',
+          drawBorder: false,
+        },
+        ticks: {
+          color: '#9ca3af',
+        },
+      },
+    },
   };
 
   const renderStatisticsCards = () => {
@@ -307,6 +396,22 @@ export default function ResultsVisualizationPage() {
     }
 
     const cards = [];
+
+    if (result.threshold_value !== undefined && result.above_threshold_count !== undefined) {
+      cards.push(
+        <div key="threshold" className="bg-gradient-to-br from-red-50 to-red-100 p-6 rounded-xl border border-red-200">
+          <div className="flex items-center justify-between mb-3">
+            <AlertCircle className="w-8 h-8 text-red-600" />
+            <span className="text-xs font-medium text-red-600 bg-red-200 px-2 py-1 rounded-full">THRESHOLD</span>
+          </div>
+          <p className="text-sm font-medium text-red-900 mb-1">Above {result.threshold_value}</p>
+          <p className="text-3xl font-bold text-red-700">{result.above_threshold_count}</p>
+          {typeof result.above_threshold_percentage === 'number' && (
+            <p className="text-xs text-red-700 mt-1">{result.above_threshold_percentage.toFixed(1)}% of patients</p>
+          )}
+        </div>
+      );
+    }
 
     // Basic Statistics
     if (result.mean || result.average) {
@@ -565,6 +670,89 @@ export default function ResultsVisualizationPage() {
               {renderStatisticsCards()}
             </div>
 
+            {(result.risk_score !== undefined || (result.patient_records && result.patient_records.length > 0)) && (
+              <div className="bg-white rounded-lg shadow-sm border p-6">
+                <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
+                  <AlertCircle className="w-5 h-5 text-red-500" />
+                  Risk Summary & Patient Data
+                </h3>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-4">
+                  {result.risk_score !== undefined && (
+                    <div>
+                      <label className="text-sm font-medium text-gray-500">Cohort Risk Score</label>
+                      <p className="text-2xl font-bold text-gray-900 mt-1">{Number(result.risk_score).toFixed(0)}</p>
+                    </div>
+                  )}
+                  {result.risk_category && (
+                    <div>
+                      <label className="text-sm font-medium text-gray-500">Cohort Risk Category</label>
+                      <p className="text-lg font-semibold text-gray-900 mt-1 capitalize">{String(result.risk_category)}</p>
+                    </div>
+                  )}
+                  {result.metric_name && (
+                    <div>
+                      <label className="text-sm font-medium text-gray-500">Metric</label>
+                      <p className="text-lg font-semibold text-gray-900 mt-1">{result.metric_name}</p>
+                    </div>
+                  )}
+                </div>
+
+                {Array.isArray(result.risk_recommendations) && result.risk_recommendations.length > 0 && (
+                  <div className="mb-4">
+                    <label className="text-sm font-medium text-gray-500 block mb-2">Recommendations</label>
+                    <ul className="list-disc list-inside text-sm text-gray-700 space-y-1">
+                      {result.risk_recommendations.map((rec, idx) => (
+                        <li key={idx}>{rec}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {result.patient_records && result.patient_records.length > 0 && (
+                  <div className="mt-4">
+                    <label className="text-sm font-medium text-gray-500 block mb-2">All Patient Records</label>
+                    <div className="overflow-x-auto border border-gray-200 rounded-lg">
+                      <table className="min-w-full divide-y divide-gray-200 text-sm">
+                        <thead className="bg-gray-50">
+                          <tr>
+                            <th className="px-4 py-2 text-left font-medium text-gray-600">Patient ID</th>
+                            <th className="px-4 py-2 text-left font-medium text-gray-600">Value</th>
+                            <th className="px-4 py-2 text-left font-medium text-gray-600">Risk Level</th>
+                            <th className="px-4 py-2 text-left font-medium text-gray-600">Threshold Status</th>
+                            <th className="px-4 py-2 text-left font-medium text-gray-600">Consequences</th>
+                          </tr>
+                        </thead>
+                        <tbody className="bg-white divide-y divide-gray-100">
+                          {result.patient_records.slice(0, 200).map((p, idx) => (
+                            <tr key={idx} className={p.above_threshold ? 'bg-red-50' : ''}>
+                              <td className="px-4 py-2 font-mono text-gray-800">{p.patient_id}</td>
+                              <td className="px-4 py-2 text-gray-800">{Number(p.value).toFixed(2)}</td>
+                              <td className="px-4 py-2 text-gray-800 capitalize">{p.risk_level || 'unknown'}</td>
+                              <td className="px-4 py-2">
+                                <span className={`px-2 py-1 text-xs font-medium rounded-full ${
+                                  p.above_threshold 
+                                    ? 'bg-red-100 text-red-800' 
+                                    : 'bg-green-100 text-green-800'
+                                }`}>
+                                  {p.above_threshold ? 'Above' : 'Below'}
+                                </span>
+                              </td>
+                              <td className="px-4 py-2 text-gray-700 text-xs max-w-xs whitespace-normal">
+                                {p.consequences || (p.above_threshold ? 'Above threshold level may increase complication risk; clinical review is recommended.' : '')}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                      {result.patient_records.length > 200 && (
+                        <p className="text-xs text-gray-500 px-4 py-2">Showing first 200 patients out of {result.patient_records.length}.</p>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Computation Info */}
             <div className="bg-white rounded-lg shadow-sm border p-6">
               <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
@@ -642,6 +830,32 @@ export default function ResultsVisualizationPage() {
                 )}
               </div>
             </div>
+
+            {(result.threshold_value !== undefined || (result.patient_records && result.patient_records.length > 0)) && (
+              <div className="bg-white rounded-lg shadow-sm border p-6">
+                <h3 className="text-lg font-semibold text-gray-900 mb-4">Threshold & Patient Distribution</h3>
+                <div className="space-y-4">
+                  {result.threshold_value !== undefined && (
+                    <div className="flex justify-between items-center py-3 border-b border-gray-100">
+                      <span className="text-gray-600">Threshold</span>
+                      <span className="font-semibold text-gray-900">{result.threshold_value}</span>
+                    </div>
+                  )}
+                  {result.above_threshold_count !== undefined && (
+                    <div className="flex justify-between items-center py-3 border-b border-gray-100">
+                      <span className="text-gray-600">Patients Above Threshold</span>
+                      <span className="font-semibold text-gray-900">{result.above_threshold_count}</span>
+                    </div>
+                  )}
+                  {typeof result.above_threshold_percentage === 'number' && (
+                    <div className="flex justify-between items-center py-3 border-b border-gray-100">
+                      <span className="text-gray-600">Percentage Above Threshold</span>
+                      <span className="font-semibold text-gray-900">{result.above_threshold_percentage.toFixed(1)}%</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
 
             {/* Advanced Analysis Results */}
             {(result.correlation_coefficient || result.p_value || result.confidence_interval) && (
@@ -819,41 +1033,8 @@ export default function ResultsVisualizationPage() {
             </div>
 
             {showCharts && (
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                {/* Bar Chart - Statistical Metrics */}
-                {generateBarChart() && (
-                  <div className="bg-white rounded-lg shadow-sm border p-6">
-                    <h4 className="text-lg font-medium text-gray-900 mb-4 flex items-center gap-2">
-                      <BarChart3 className="w-5 h-5 text-blue-600" />
-                      Statistical Overview
-                    </h4>
-                    <div className="h-80">
-                      <Bar data={generateBarChart()} options={chartOptions} />
-                    </div>
-                    <p className="text-sm text-gray-500 mt-3">
-                      Comparison of key statistical metrics from the secure computation.
-                    </p>
-                  </div>
-                )}
-
-                {/* Pie Chart - Organization Distribution */}
-                {generatePieChart() && (
-                  <div className="bg-white rounded-lg shadow-sm border p-6">
-                    <h4 className="text-lg font-medium text-gray-900 mb-4 flex items-center gap-2">
-                      <PieChart className="w-5 h-5 text-green-600" />
-                      Participation Analysis
-                    </h4>
-                    <div className="h-80">
-                      <Pie data={generatePieChart()} options={{
-                        ...chartOptions,
-                        scales: undefined
-                      }} />
-                    </div>
-                    <p className="text-sm text-gray-500 mt-3">
-                      Distribution of organizations and data points in the computation.
-                    </p>
-                  </div>
-                )}
+              <div className="space-y-8">
+                <SecureAnalysisChartsSection result={result} />
 
                 {/* Correlation Visualization */}
                 {generateCorrelationChart() && (
@@ -921,6 +1102,8 @@ export default function ResultsVisualizationPage() {
                   </div>
                 )}
 
+                {/* Correlation, temporal, and feature importance visualizations remain below */}
+
                 {/* Feature Importance Chart */}
                 {result.feature_importance && result.feature_importance.length > 0 && (
                   <div className="bg-white rounded-lg shadow-sm border p-6 lg:col-span-2">
@@ -962,7 +1145,7 @@ export default function ResultsVisualizationPage() {
                 )}
 
                 {/* No Charts Available Message */}
-                {!generateBarChart() && !generatePieChart() && !generateCorrelationChart() && !generateTimeSeriesChart() && !result.feature_importance && (
+                {!generateBarChart() && !generatePieChart() && !generateCorrelationChart() && !generateTimeSeriesChart() && !generateThresholdDistributionChart() && !generateRiskLevelChart() && !result.feature_importance && (
                   <div className="lg:col-span-2 text-center py-12 text-gray-500">
                     <BarChart3 className="w-16 h-16 mx-auto mb-4 text-gray-300" />
                     <h3 className="text-lg font-medium text-gray-900 mb-2">No Visual Data Available</h3>

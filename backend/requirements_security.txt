@@ -1,0 +1,22 @@
+# Security Enhancement Dependencies
+# Add these to your main requirements.txt
+
+# SMPC Protocol Security (Improvement #1)
+pycryptodome>=3.19.0          # Secure prime generation for Shamir's Secret Sharing
+
+# API Security (Improvement #5)
+slowapi>=0.1.9                # Rate limiting for FastAPI
+python-multipart>=0.0.6       # Form data parsing (if not already installed)
+
+# Existing dependencies (ensure these versions or higher)
+cryptography>=41.0.0          # Fernet encryption, HMAC
+fastapi>=0.104.0              # Web framework
+uvicorn>=0.24.0               # ASGI server
+sqlalchemy>=2.0.0             # ORM
+pydantic>=2.0.0               # Data validation
+python-jose[cryptography]>=3.3.0  # JWT handling
+passlib[bcrypt]>=1.7.4        # Password hashing
+
+# Optional but recommended
+python-dotenv>=1.0.0          # Environment variables
+alembic>=1.12.0               # Database migrations

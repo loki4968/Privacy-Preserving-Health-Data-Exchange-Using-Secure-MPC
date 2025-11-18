@@ -9,6 +9,14 @@ import random
 import time
 from decimal import Decimal, getcontext, InvalidOperation
 
+# Try to import pycryptodome for secure prime generation
+try:
+    from Crypto.Util import number as crypto_number
+    PYCRYPTODOME_AVAILABLE = True
+except ImportError:
+    PYCRYPTODOME_AVAILABLE = False
+    print("Warning: pycryptodome not available. Using fallback prime generation.")
+
 # Set precision for Decimal calculations
 getcontext().prec = 28
 
@@ -17,8 +25,11 @@ class ShamirSecretSharing:
     
     def __init__(self, prime: int = None):
         """Initialize with an optional prime number for the finite field"""
-        # If no prime is provided, use a large prime number
-        self.prime = prime or 2**127 - 1  # Mersenne prime
+        # If no prime is provided, generate a cryptographically secure random prime
+        if prime is None:
+            self.prime = self._generate_secure_prime(256)  # 256-bit prime for security
+        else:
+            self.prime = prime
         
     def _mod_inverse(self, x: int, m: int) -> int:
         """Calculate the modular multiplicative inverse"""
@@ -35,6 +46,58 @@ class ShamirSecretSharing:
         else:
             gcd, x, y = self._extended_gcd(b % a, a)
             return gcd, y - (b // a) * x, x
+    
+    def _generate_secure_prime(self, bits: int) -> int:
+        """Generate a cryptographically secure random prime"""
+        if PYCRYPTODOME_AVAILABLE:
+            # Use pycryptodome for secure prime generation
+            return crypto_number.getPrime(bits, randfunc=secrets.token_bytes)
+        else:
+            # Fallback: Generate using Miller-Rabin primality test
+            return self._generate_prime_fallback(bits)
+    
+    def _generate_prime_fallback(self, bits: int) -> int:
+        """Fallback prime generation using Miller-Rabin"""
+        while True:
+            # Generate random odd number with specified bit length
+            candidate = secrets.randbits(bits)
+            candidate |= (1 << bits - 1) | 1  # Set MSB and LSB
+            
+            if self._is_prime_miller_rabin(candidate):
+                return candidate
+    
+    def _is_prime_miller_rabin(self, n: int, k: int = 40) -> bool:
+        """Miller-Rabin primality test with k rounds"""
+        if n < 2:
+            return False
+        if n == 2 or n == 3:
+            return True
+        if n % 2 == 0:
+            return False
+        
+        # Write n-1 as d * 2^r
+        r = 0
+        d = n - 1
+        while d % 2 == 0:
+            r += 1
+            d //= 2
+        
+        # Perform k rounds of testing
+        for _ in range(k):
+            a = secrets.randbelow(n - 3) + 2
+            x = pow(a, d, n)
+            
+            if x == 1 or x == n - 1:
+                continue
+            
+            for _ in range(r - 1):
+                x = pow(x, 2, n)
+                if x == n - 1:
+                    break
+            else:
+                return False
+        
+        return True
     
     def split_secret(self, secret: Union[int, float, Decimal], n: int, k: int) -> List[Tuple[int, Union[int, Decimal]]]:
         """Split a secret into n shares, requiring k shares to reconstruct

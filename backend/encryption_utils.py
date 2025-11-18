@@ -102,10 +102,53 @@ class EncryptionManager:
         return self.hash_data(data) == hash_value
 
 
+# Medical data validation ranges (biologically plausible values)
+MEDICAL_RANGES = {
+    "blood_pressure_systolic": (60, 250),  # mmHg
+    "blood_pressure_diastolic": (40, 150),  # mmHg
+    "heart_rate": (30, 250),  # bpm
+    "temperature": (32.0, 42.0),  # Celsius
+    "temperature_f": (89.6, 107.6),  # Fahrenheit
+    "weight": (2.0, 500.0),  # kg
+    "height": (30.0, 300.0),  # cm
+    "glucose_level": (20, 600),  # mg/dL
+    "oxygen_saturation": (50, 100),  # %
+    "respiratory_rate": (8, 60),  # breaths per minute
+    "cholesterol_total": (100, 400),  # mg/dL
+    "cholesterol_hdl": (20, 100),  # mg/dL
+    "cholesterol_ldl": (50, 300),  # mg/dL
+    "triglycerides": (30, 500),  # mg/dL
+}
+
+
+def validate_medical_value(metric: str, value: float) -> bool:
+    """
+    Validate that a health metric value is within biologically plausible range.
+    
+    Args:
+        metric: The health metric name
+        value: The numeric value to validate
+        
+    Returns:
+        True if valid, raises ValueError if invalid
+    """
+    # Normalize metric name
+    metric_lower = metric.lower().replace(" ", "_")
+    
+    if metric_lower in MEDICAL_RANGES:
+        min_val, max_val = MEDICAL_RANGES[metric_lower]
+        if not (min_val <= value <= max_val):
+            raise ValueError(
+                f"Invalid {metric}: {value}. "
+                f"Expected range: {min_val}-{max_val}"
+            )
+    
+    return True
+
+
 def validate_health_data(data: dict) -> bool:
     """
-    Enhanced validation for health data.
-    Suitable for college project with basic security checks.
+    Enhanced validation for health data with biologically plausible range checks.
     """
     if not isinstance(data, dict):
         print("Data must be a dictionary")
@@ -147,6 +190,16 @@ def validate_health_data(data: dict) -> bool:
     
     if data["data_type"] not in valid_data_types:
         print(f"Warning: data_type '{data['data_type']}' not in standard health types")
+    
+    # Validate numeric health values against medical ranges
+    if isinstance(data.get("data"), dict):
+        for metric, value in data["data"].items():
+            if isinstance(value, (int, float)):
+                try:
+                    validate_medical_value(metric, value)
+                except ValueError as e:
+                    print(f"Medical range validation failed: {e}")
+                    return False
     
     print("Health data validation passed")
     return True

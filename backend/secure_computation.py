@@ -1,11 +1,12 @@
 from typing import List, Dict, Any, Optional, Union, Tuple
 from datetime import datetime, timedelta
 import uuid
-from models import SecureComputation, ComputationParticipant, ComputationResult, Organization, ComputationInvitation
+from models import SecureComputation, ComputationParticipant, ComputationResult, Organization, ComputationInvitation, ComputationPatientRecord
 from encryption_utils import EncryptionManager
 from homomorphic_encryption_enhanced import EnhancedHomomorphicEncryption
 from smpc_protocols import smpc_protocol
 from advanced_smpc_computations import AdvancedSMPCComputations
+from services.risk_stratification import RiskStratificationService
 from sqlalchemy.orm import Session
 import statistics
 import base64
@@ -171,7 +172,7 @@ class SecureComputationService:
             # the EncryptionManager's decrypt method.
             return base64.b64decode(data.encode()).decode() if isinstance(data, str) else data
 
-    def create_computation(self, org_id: int, computation_type: str, make_public: bool = True, security_method: str = "homomorphic") -> str:
+    def create_computation(self, org_id: int, computation_type: str, make_public: bool = True, security_method: str = "homomorphic", parameters: Optional[Dict[str, Any]] = None) -> str:
         computation_id = str(uuid.uuid4())
         # Set status to waiting_for_participants if we want other orgs to see it
         initial_status = "waiting_for_participants" if make_public else "initialized"
@@ -180,17 +181,24 @@ class SecureComputationService:
             org_id=org_id,
             type=computation_type,
             security_method=security_method,
-            status=initial_status
+            status=initial_status,
+            parameters=parameters
         )
         self.db.add(computation)
         self.db.commit()
         return computation_id
 
-    def create_computation_with_invitations(self, org_id: int, computation_type: str, invited_org_ids: List[int] = None, security_method: str = "homomorphic") -> str:
+    def create_computation_with_invitations(self, org_id: int, computation_type: str, invited_org_ids: List[int] = None, security_method: str = "homomorphic", parameters: Optional[Dict[str, Any]] = None) -> str:
         """Create a computation and send invitations to specific organizations"""
         try:
             # Create the computation
-            computation_id = self.create_computation(org_id, computation_type, make_public=False, security_method=security_method)
+            computation_id = self.create_computation(
+                org_id,
+                computation_type,
+                make_public=False,
+                security_method=security_method,
+                parameters=parameters,
+            )
             
             # Create invitations for specified organizations
             if invited_org_ids:
@@ -1120,14 +1128,23 @@ class SecureComputationService:
             # Determine computation type and use appropriate secure method
             computation_type = computation.type.lower()
             
+            # Define advanced SMPC computation types (same as in _determine_security_method)
+            advanced_smpc_types = [
+                "secure_sum", "secure_mean", "secure_variance", "secure_average",
+                "secure_correlation", "secure_regression", "secure_survival",
+                "federated_logistic", "federated_random_forest", "anomaly_detection",
+                "cohort_analysis", "drug_safety", "epidemiological",
+                "secure_gwas", "pharmacogenomics"
+            ]
+            
             # Process data based on computation type
             try:
                 # Check if we're using homomorphic encryption, SMPC, or both
                 print(f"Processing computation type: {computation_type}")
-                if computation_type in ["secure_sum", "secure_mean", "secure_variance", "secure_average"]:
-                    # These types use both homomorphic encryption and SMPC
+                if computation_type in advanced_smpc_types:
+                    # These types use both homomorphic encryption and SMPC (hybrid)
                     print("Using hybrid computation method")
-                    result = self._perform_secure_computation_hybrid(computation_type, results)
+                    result = self._perform_secure_computation_hybrid(computation, results)
                 else:
                     # Other types use homomorphic encryption only
                     print("Using homomorphic computation method")
@@ -1138,7 +1155,7 @@ class SecureComputationService:
                 result["organizations_count"] = len(set(r.org_id for r in results))
                 result["computation_type"] = computation.type
                 result["timestamp"] = datetime.utcnow().isoformat()
-                result["secure_computation_method"] = "hybrid" if computation_type in ["secure_sum", "secure_mean", "secure_variance", "secure_average"] else "homomorphic"
+                result["secure_computation_method"] = "hybrid" if computation_type in advanced_smpc_types else "homomorphic"
                 
                 # Update computation with results
                 computation.result = result
@@ -1191,8 +1208,11 @@ class SecureComputationService:
                 pass
             return False
             
-    def _perform_secure_computation_hybrid(self, computation_type: str, results: List[ComputationResult]) -> Dict[str, Any]:
+    def _perform_secure_computation_hybrid(self, computation: SecureComputation, results: List[ComputationResult]) -> Dict[str, Any]:
         """Perform secure computation using both homomorphic encryption and SMPC"""
+
+        computation_type = computation.type.lower()
+        parameters: Dict[str, Any] = computation.parameters or {}
 
         # Check if this is an advanced computation type that requires SMPC
         advanced_computations = self.advanced_smpc.get_available_computations()
@@ -1340,6 +1360,7 @@ class SecureComputationService:
                             decrypted_values.append(float(self.decrypt(enc_val)))
                     result["mean"] = sum(decrypted_values) / len(decrypted_values) if decrypted_values else 0
                     result["average"] = result["mean"]
+
             else:
                 # Fallback: decrypt and calculate average manually
                 decrypted_values = []
@@ -1350,6 +1371,139 @@ class SecureComputationService:
                         decrypted_values.append(float(enc_val))
                 result["mean"] = sum(decrypted_values) / len(decrypted_values) if decrypted_values else 0
                 result["average"] = result["mean"]
+
+            # Threshold-based analysis and risk stratification specifically for secure_average
+            if computation_type == "secure_average":
+                threshold_value = parameters.get("threshold")
+                metric_name = parameters.get("metric", "blood_sugar")
+
+                patient_records: List[ComputationPatientRecord] = []
+                try:
+                    patient_records = self.db.query(ComputationPatientRecord).filter_by(
+                        computation_id=computation.computation_id
+                    ).all()
+                except Exception:
+                    patient_records = []
+
+                if patient_records:
+                    values = [float(r.value) for r in patient_records if r.value is not None]
+                    if values:
+                        result["metric_name"] = metric_name
+                        result["patient_records_count"] = len(values)
+
+                        # Threshold-based counts and list of impacted patients
+                        # Generate a list of all patients with their risk levels and threshold status
+                        all_patient_records = []
+                        for record in patient_records:
+                            all_patient_records.append({
+                                "patient_id": record.patient_id,
+                                "value": float(record.value) if record.value is not None else None,
+                                "risk_level": "unknown",
+                                "above_threshold": False,
+                                "consequences": None,
+                            })
+
+                        # Threshold-based counts
+                        threshold_float: Optional[float] = None
+                        if threshold_value is not None:
+                            try:
+                                threshold_float = float(threshold_value)
+                            except (TypeError, ValueError):
+                                threshold_float = None
+
+                        if threshold_float is not None:
+                            above_records = [
+                                p for p in all_patient_records
+                                if p["value"] is not None and float(p["value"]) >= threshold_float
+                            ]
+                            result["threshold_value"] = threshold_float
+                            result["above_threshold_count"] = len(above_records)
+                            result["above_threshold_percentage"] = (
+                                (len(above_records) / len(all_patient_records)) * 100.0
+                            )
+
+                        # Build per-patient list with risk level classification
+                        try:
+                            risk_service = RiskStratificationService()
+
+                            thresholds_cfg = None
+                            for key, cfg in risk_service.risk_thresholds.items():
+                                if key in metric_name.lower():
+                                    thresholds_cfg = cfg
+                                    break
+
+                            def classify_risk(val: float) -> str:
+                                if not thresholds_cfg:
+                                    return "unknown"
+                                very_high = thresholds_cfg.get("very_high", thresholds_cfg.get("high", val + 1))
+                                high = thresholds_cfg.get("high", thresholds_cfg.get("low", 0))
+                                low = thresholds_cfg.get("low", thresholds_cfg.get("high", 0))
+                                if val > very_high:
+                                    return "very_high"
+                                if val > high:
+                                    return "high"
+                                if val < low:
+                                    return "low"
+                                return "normal"
+
+                            # Use the configured threshold as the base for consequence bands.
+                            # Example: if threshold is 160, we treat 160–169, 170–179, and >=180 differently.
+                            base_threshold = threshold_float
+                            if base_threshold is None:
+                                # Fallback to the metric's "high" threshold if no custom threshold was set
+                                base_threshold = float(thresholds_cfg.get("high", 140.0)) if thresholds_cfg else 140.0
+
+                            for p in all_patient_records:
+                                if p["value"] is None:
+                                    continue
+                                val = float(p["value"])
+                                risk_level = classify_risk(val)
+                                p["risk_level"] = risk_level
+                                above_threshold = threshold_float is not None and val >= threshold_float
+                                p["above_threshold"] = above_threshold
+
+                                consequences = None
+                                if above_threshold:
+                                    if val >= base_threshold + 20:
+                                        # Very high above threshold (e.g. >= 180 when threshold is 160)
+                                        consequences = (
+                                            "Very high blood sugar far above the target range; "
+                                            "there is increased risk of acute complications and long-term organ damage "
+                                            "if this pattern persists. Urgent clinical review is recommended."
+                                        )
+                                    elif val >= base_threshold + 10:
+                                        # Clearly above threshold (e.g. 170–179 when threshold is 160)
+                                        consequences = (
+                                            "Blood sugar is significantly above the agreed threshold; "
+                                            "this increases the risk of diabetes-related complications and requires "
+                                            "timely treatment adjustment and closer monitoring."
+                                        )
+                                    else:
+                                        # Just above threshold (e.g. 160–169 when threshold is 160)
+                                        consequences = (
+                                            "Blood sugar is just above the threshold; "
+                                            "early lifestyle and medication optimization can help prevent progression "
+                                            "to more severe hyperglycemia."
+                                        )
+
+                                p["consequences"] = consequences
+
+                            result["patient_records"] = all_patient_records
+                            result["patients_above_threshold"] = [
+                                p for p in all_patient_records if p["above_threshold"]
+                            ]
+
+                            # Cohort-level risk assessment for the metric
+                            cohort_risk = risk_service.calculate_risk_score(
+                                {metric_name: values}, privacy_budget=1.0
+                            )
+                            if cohort_risk.get("success"):
+                                result["risk_score"] = cohort_risk["risk_score"]
+                                result["risk_category"] = cohort_risk["risk_category"]
+                                result["risk_factors"] = cohort_risk["risk_factors"]
+                                result["risk_recommendations"] = cohort_risk["recommendations"]
+                        except Exception as risk_exc:
+                            result["risk_error"] = str(risk_exc)
 
         elif computation_type == "secure_variance":
             # For variance, we need to decrypt the values first
@@ -1397,32 +1551,40 @@ class SecureComputationService:
                 raise ValueError("No valid SMPC shares found for advanced computation")
             
             # Route to appropriate advanced computation
+            computation_result = None
             if computation_type == "secure_correlation":
-                return self.advanced_smpc.secure_correlation_analysis(all_shares)
+                computation_result = self.advanced_smpc.secure_correlation_analysis(all_shares)
             elif computation_type == "secure_regression":
-                return self.advanced_smpc.secure_regression_analysis(all_shares)
+                computation_result = self.advanced_smpc.secure_regression_analysis(all_shares)
             elif computation_type == "secure_survival":
-                return self.advanced_smpc.secure_survival_analysis(all_shares)
+                computation_result = self.advanced_smpc.secure_survival_analysis(all_shares)
             elif computation_type == "federated_logistic":
-                return self.advanced_smpc.secure_federated_learning(all_shares, "logistic")
+                computation_result = self.advanced_smpc.secure_federated_learning(all_shares, "logistic")
             elif computation_type == "federated_random_forest":
-                return self.advanced_smpc.secure_federated_learning(all_shares, "random_forest")
+                computation_result = self.advanced_smpc.secure_federated_learning(all_shares, "random_forest")
             elif computation_type == "anomaly_detection":
-                return self.advanced_smpc.secure_anomaly_detection(all_shares)
+                computation_result = self.advanced_smpc.secure_anomaly_detection(all_shares)
             elif computation_type == "cohort_analysis":
                 # Would need criteria from computation parameters
                 criteria = {"age_min": 18, "condition": "diabetes"}  # Example
-                return self.advanced_smpc.secure_cohort_analysis(all_shares, criteria)
+                computation_result = self.advanced_smpc.secure_cohort_analysis(all_shares, criteria)
             elif computation_type == "drug_safety":
-                return self.advanced_smpc.secure_drug_safety_analysis(all_shares)
+                computation_result = self.advanced_smpc.secure_drug_safety_analysis(all_shares)
             elif computation_type == "epidemiological":
-                return self.advanced_smpc.secure_epidemiological_analysis(all_shares)
+                computation_result = self.advanced_smpc.secure_epidemiological_analysis(all_shares)
             elif computation_type == "secure_gwas":
-                return self.advanced_smpc.secure_gwas_analysis(all_shares)
+                computation_result = self.advanced_smpc.secure_gwas_analysis(all_shares)
             elif computation_type == "pharmacogenomics":
-                return self.advanced_smpc.secure_pharmacogenomics_analysis(all_shares)
+                computation_result = self.advanced_smpc.secure_pharmacogenomics_analysis(all_shares)
             else:
                 return {"error": f"Unknown advanced computation type: {computation_type}"}
+            
+            # Add security metadata to the result
+            if computation_result and not computation_result.get("error"):
+                computation_result["security_method"] = "Hybrid (Homomorphic Encryption + SMPC)"
+                computation_result["count"] = len(all_shares)
+            
+            return computation_result
                 
         except Exception as e:
             return {"error": f"Advanced computation failed: {str(e)}"}

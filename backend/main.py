@@ -96,6 +96,8 @@ def _ensure_db_schema():
                 alter_statements.append("ALTER TABLE secure_computations ADD COLUMN completed_at DATETIME")
             if 'error_message' not in cols:
                 alter_statements.append("ALTER TABLE secure_computations ADD COLUMN error_message VARCHAR")
+            if 'parameters' not in cols:
+                alter_statements.append("ALTER TABLE secure_computations ADD COLUMN parameters JSON")
             # Execute pending alters
             for stmt in alter_statements:
                 try:

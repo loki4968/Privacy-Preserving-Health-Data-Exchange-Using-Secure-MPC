@@ -30,6 +30,7 @@ const SecureComputationWizard = ({ user, onClose, onComputationCreated }) => {
   const [singleColumn, setSingleColumn] = useState('');
   const [multiColumns, setMultiColumns] = useState('');
   const [columnIndex, setColumnIndex] = useState('');
+  const [secureAverageThreshold, setSecureAverageThreshold] = useState('160');
   
   // Step 3: Security Method
   const [selectedSecurityMethod, setSelectedSecurityMethod] = useState('homomorphic');
@@ -156,6 +157,13 @@ const SecureComputationWizard = ({ user, onClose, onComputationCreated }) => {
         invited_org_ids: selectedParticipants.length > 0 ? selectedParticipants : null,
         security_method: selectedSecurityMethod
       };
+
+      if (selectedFunction === 'secure_average' && secureAverageThreshold !== '') {
+        const parsed = Number(secureAverageThreshold);
+        if (!Number.isNaN(parsed)) {
+          computationData.threshold = parsed;
+        }
+      }
       
       console.log('Creating computation with data:', computationData);
       
@@ -353,6 +361,22 @@ const SecureComputationWizard = ({ user, onClose, onComputationCreated }) => {
                     </p>
                   </div>
                 </div>
+
+                {selectedFunction === 'secure_average' && (
+                  <div className="space-y-2 mt-4">
+                    <label className="block text-sm font-medium text-gray-700">
+                      Threshold for High Blood Sugar (mg/dL)
+                    </label>
+                    <input
+                      type="number"
+                      className="w-full p-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                      value={secureAverageThreshold}
+                      onChange={(e) => setSecureAverageThreshold(e.target.value)}
+                      placeholder="e.g., 160"
+                      min="0"
+                    />
+                  </div>
+                )}
               </div>
 
               {/* Optional CSV Column Mapping */}

@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from typing import List, Optional, Dict, Any, Union
 import csv
 import io
-from models import SecureComputation, ComputationParticipant, ComputationResult, Organization, ComputationInvitation
+from models import SecureComputation, ComputationParticipant, ComputationResult, Organization, ComputationInvitation, ComputationPatientRecord
 from dependencies import get_db, get_current_user, require_permissions
 from auth_utils import Permission
 from secure_computation import SecureComputationService, SecureHealthMetricsComputation
@@ -217,6 +217,15 @@ async def create_computation(
 
         print(f"Final computation_type: {computation_type}")
 
+        # Prepare computation parameters (used by secure_average and advanced secure types)
+        parameters: Dict[str, Any] = {}
+        if computation.threshold is not None:
+            parameters["threshold"] = computation.threshold
+
+        # For now, treat secure_average as a blood sugar metric by default
+        if computation_type == "secure_average":
+            parameters.setdefault("metric", "blood_sugar")
+
         # Use new invitation-based system if specific organizations are invited
         if computation.invited_org_ids:
             print(f"Creating computation with invitations: {computation.invited_org_ids}")
@@ -224,7 +233,8 @@ async def create_computation(
                 user_id,
                 computation_type,
                 computation.invited_org_ids,
-                security_method=computation.security_method
+                computation.security_method,
+                parameters=parameters
             )
         else:
             # Legacy: create public computation (not recommended)
@@ -233,7 +243,8 @@ async def create_computation(
                 user_id,
                 computation_type,
                 make_public=True,
-                security_method=computation.security_method
+                security_method=computation.security_method,
+                parameters=parameters
             )
 
         print(f"Created computation with ID: {computation_id}")
@@ -460,6 +471,9 @@ async def submit_csv_data(
         # Parse CSV with optional header and column selection
         data_points: Union[List[float], Dict[str, List[float]]] = []
         selected_columns: List[str] = []
+        patient_rows_for_records: List[Dict[str, Any]] = []
+        patient_metric_column: Optional[str] = None
+        patient_id_column: Optional[str] = None
 
         # Helper to try parse float safely
         def to_float(x: Any) -> Optional[float]:
@@ -472,6 +486,18 @@ async def submit_csv_data(
             reader = csv.DictReader(io.StringIO(csv_data), delimiter=delimiter or ",")
             headers = reader.fieldnames or []
             print(f"CSV headers detected: {headers}")
+
+            # Identify potential patient ID column for secure_average computations
+            if computation.type and computation.type.lower() == "secure_average":
+                for h in headers:
+                    if not h:
+                        continue
+                    h_norm = h.strip().lower()
+                    if h_norm in ["patientid", "patient_id", "patient id"]:
+                        patient_id_column = h
+                        break
+
+            rows = list(reader)
 
             # Determine which columns to extract
             if columns:
@@ -490,14 +516,26 @@ async def submit_csv_data(
             if len(selected_columns) == 1:
                 col = selected_columns[0]
                 values: List[float] = []
-                for row in reader:
+                for row in rows:
                     val = to_float(row.get(col))
                     if val is not None:
                         values.append(val)
+
+                        # Capture per-patient metric rows for secure_average
+                        if computation.type and computation.type.lower() == "secure_average" and patient_id_column:
+                            pid = row.get(patient_id_column)
+                            if pid is not None and str(pid).strip() != "":
+                                patient_rows_for_records.append(
+                                    {
+                                        "patient_id": str(pid),
+                                        "value": float(val),
+                                        "metric_name": col,
+                                    }
+                                )
                 data_points = values
             else:
                 dp_dict: Dict[str, List[float]] = {c: [] for c in selected_columns}
-                for row in reader:
+                for row in rows:
                     for c in selected_columns:
                         val = to_float(row.get(c))
                         if val is not None:
@@ -608,6 +646,30 @@ async def submit_csv_data(
                 status_code=400,
                 detail=f"{error_detail} (Error Code: {error_code})"
             )
+        # Persist per-patient metric records for secure_average computations if available
+        try:
+            if patient_rows_for_records:
+                records: List[ComputationPatientRecord] = []
+                for row in patient_rows_for_records:
+                    try:
+                        records.append(
+                            ComputationPatientRecord(
+                                computation_id=computation_id,
+                                org_id=user_org_id,
+                                patient_id=row.get("patient_id"),
+                                metric_name=row.get("metric_name"),
+                                value=row.get("value"),
+                            )
+                        )
+                    except Exception as rec_err:
+                        print(f"Error building ComputationPatientRecord: {rec_err}")
+                if records:
+                    db.add_all(records)
+                    db.commit()
+                    print(f"Stored {len(records)} patient records for computation {computation_id}")
+        except Exception as store_exc:
+            # Do not fail the request if storing detailed records fails
+            print(f"Warning: Failed to store patient-level records: {store_exc}")
         
         return {
             "message": "CSV data submitted successfully",

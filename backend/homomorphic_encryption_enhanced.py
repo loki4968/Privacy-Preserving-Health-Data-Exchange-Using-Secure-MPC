@@ -8,6 +8,8 @@ import math
 from typing import List, Tuple, Union, Dict, Any
 import json
 import hashlib
+import hmac
+import secrets
 try:
     from cryptography.hazmat.primitives import hashes
     from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
@@ -104,6 +106,7 @@ class PaillierCiphertext:
     def __init__(self, value: int, public_key: PaillierPublicKey):
         self.value = value
         self.public_key = public_key
+        self.integrity_tag = None  # HMAC tag for integrity verification
     
     def __add__(self, other: Union['PaillierCiphertext', int]) -> 'PaillierCiphertext':
         """Homomorphic addition of two ciphertexts or ciphertext and plaintext."""
@@ -143,9 +146,15 @@ class PaillierCiphertext:
 class EnhancedHomomorphicEncryption:
     """Enhanced homomorphic encryption service with real Paillier implementation."""
     
-    def __init__(self, key_size: int = 2048):
+    def __init__(self, key_size: int = 3072):
+        # Use minimum 3072-bit keys for production (NIST recommendation post-2030)
+        if key_size < 3072:
+            print(f"Warning: key_size {key_size} is below NIST recommendation. Using 3072 bits.")
+            key_size = 3072
         self.key_size = key_size
         self._key_pair = None
+        # Generate HMAC key for ciphertext integrity
+        self.hmac_key = secrets.token_bytes(32)
     
     def generate_keypair(self) -> PaillierKeyPair:
         """Generate a new Paillier key pair."""
@@ -191,7 +200,7 @@ class EnhancedHomomorphicEncryption:
         return self._key_pair.private_key
     
     def encrypt(self, plaintext: Union[int, float], public_key: PaillierPublicKey = None) -> PaillierCiphertext:
-        """Encrypt a value using Paillier encryption."""
+        """Encrypt a value using Paillier encryption with integrity check."""
         if public_key is None:
             public_key = self.get_public_key()
         
@@ -199,12 +208,20 @@ class EnhancedHomomorphicEncryption:
         if isinstance(plaintext, float):
             plaintext = int(plaintext * 1000)  # Scale by 1000 for precision
         
-        return public_key.encrypt(plaintext)
+        ciphertext = public_key.encrypt(plaintext)
+        # Add HMAC for ciphertext integrity verification
+        ciphertext.integrity_tag = self._generate_integrity_tag(ciphertext.value)
+        return ciphertext
     
     def decrypt(self, ciphertext: PaillierCiphertext, private_key: PaillierPrivateKey = None) -> float:
-        """Decrypt a Paillier ciphertext."""
+        """Decrypt a Paillier ciphertext with integrity verification."""
         if private_key is None:
             private_key = self.get_private_key()
+        
+        # Verify ciphertext integrity if tag exists
+        if hasattr(ciphertext, 'integrity_tag') and ciphertext.integrity_tag:
+            if not self._verify_integrity_tag(ciphertext.value, ciphertext.integrity_tag):
+                raise ValueError("Ciphertext integrity check failed - possible tampering detected")
         
         plaintext = private_key.decrypt(ciphertext)
         
@@ -307,6 +324,16 @@ class EnhancedHomomorphicEncryption:
         
         _, x, _ = extended_gcd(a, m)
         return (x % m + m) % m
+    
+    def _generate_integrity_tag(self, ciphertext_value: int) -> bytes:
+        """Generate HMAC integrity tag for ciphertext."""
+        message = str(ciphertext_value).encode('utf-8')
+        return hmac.new(self.hmac_key, message, hashlib.sha256).digest()
+    
+    def _verify_integrity_tag(self, ciphertext_value: int, tag: bytes) -> bool:
+        """Verify HMAC integrity tag for ciphertext."""
+        expected_tag = self._generate_integrity_tag(ciphertext_value)
+        return hmac.compare_digest(expected_tag, tag)
 
 
 class SecureHealthMetrics:

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, JSON, LargeBinary, Enum, Boolean, create_engine, event, Date
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, JSON, LargeBinary, Enum, Boolean, create_engine, event, Date, Float
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, sessionmaker
 from datetime import datetime, date
@@ -145,6 +145,37 @@ class AuditLog(Base):
 
     user = relationship("Organization")
 
+
+class TamperProofAuditLog(Base):
+    """Tamper-evident audit log with chain integrity"""
+    __tablename__ = "audit_logs_secured"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("organizations.id", ondelete="SET NULL"))
+    action = Column(String(50), nullable=False)
+    resource_type = Column(String(50), nullable=False)
+    resource_id = Column(String(100))  # Support UUID strings
+    log_entry = Column(LargeBinary, nullable=False)  # Encrypted log data
+    previous_hash = Column(String(64), index=True)  # Chain integrity
+    current_hash = Column(String(64), unique=True, nullable=False, index=True)  # Entry hash
+    signature = Column(LargeBinary)  # Digital signature for non-repudiation
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    data_access_pattern = Column(JSON)  # Track who accessed what, when
+    
+    user = relationship("Organization")
+    
+    def generate_hash(self) -> str:
+        """Generate SHA-256 hash for this log entry"""
+        data = f"{self.user_id}:{self.action}:{self.resource_type}:{self.resource_id}:{self.created_at.isoformat()}:{self.previous_hash}".encode()
+        return hashlib.sha256(data).hexdigest()
+    
+    def verify_chain(self, previous_log: 'TamperProofAuditLog' = None) -> bool:
+        """Verify the integrity of the log chain"""
+        if previous_log:
+            return self.previous_hash == previous_log.current_hash
+        # First log entry should have None or genesis hash
+        return self.previous_hash is None or self.previous_hash == "0" * 64
+
 class SecureHealthRecord(Base):
     __tablename__ = "secure_health_records"
 
@@ -152,7 +183,8 @@ class SecureHealthRecord(Base):
     patient_id = Column(String, index=True)
     org_id = Column(Integer, ForeignKey("organizations.id"))
     data_type = Column(String)
-    encrypted_value = Column(String, nullable=False)
+    encrypted_value = Column(LargeBinary, nullable=False)  # Binary storage for efficiency
+    encryption_metadata = Column(JSON)  # Store IV, salt, version info
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
@@ -228,6 +260,7 @@ class SecureComputation(Base):
     result = Column(JSON)
     error_message = Column(String)
     error_code = Column(String)
+    parameters = Column(JSON)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     completed_at = Column(DateTime)
@@ -271,6 +304,17 @@ class ComputationResult(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     computation = relationship("SecureComputation", back_populates="results")
+
+
+class ComputationPatientRecord(Base):
+    __tablename__ = "computation_patient_records"
+
+    id = Column(Integer, primary_key=True)
+    computation_id = Column(String, ForeignKey('secure_computations.computation_id'), nullable=False)
+    org_id = Column(Integer, nullable=False)
+    patient_id = Column(String, nullable=False)
+    metric_name = Column(String)
+    value = Column(Float, nullable=False)
 
 class SecureComputationResult(Base):
     __tablename__ = "secure_computation_results"
