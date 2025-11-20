@@ -11,14 +11,12 @@ This document outlines the current project structure and recent reorganization e
 │   ├── components/       # React components
 │   ├── context/          # React context providers
 │   ├── services/         # API and utility services
-│   ├── tests/            # Frontend tests
 │   └── ...               # Pages and other Next.js files
 │
 ├── backend/              # FastAPI backend
 │   ├── routers/          # API route definitions
 │   ├── models/           # Database models
 │   ├── services/         # Business logic services
-│   ├── tests/            # Backend tests
 │   └── ...               # Utility files and configuration
 │
 ├── docs/                 # Project documentation
@@ -35,16 +33,14 @@ This document outlines the current project structure and recent reorganization e
 
 ### Backend Tests
 
-- Moved test files from root backend directory to `backend/tests/`
-- Organized test files by functionality
-- Removed redundant test files
+- Original backend tests were located in `backend/tests/` and have been removed in this cleaned project version.
 
 ### Frontend Consolidation
 
 - Copied components from `frontend/src/components/` to `app/components/`
 - Converted .js files to .jsx for Next.js compatibility
 - Copied services from `frontend/src/services/` to `app/services/`
-- Copied tests from `frontend/src/tests/` to `app/tests/`
+- Copied tests from `frontend/src/tests/` to `app/tests/` (tests have since been removed from the cleaned project)
 
 ## Development Guidelines
 

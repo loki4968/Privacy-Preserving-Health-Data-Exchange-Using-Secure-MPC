@@ -675,22 +675,12 @@ curl -X GET "http://localhost:8000/monitoring/alerts?status=active&severity=high
 
 ## 🧪 Testing
 
-### Backend Tests
-```bash
-cd backend
-python -m pytest tests/
-```
+All automated test files have been removed in this cleaned project version to reduce repository size and complexity.  
+The original project used:
+- Pytest for backend tests
+- Jest/React Testing Library for frontend tests
 
-### Frontend Tests
-```bash
-npm test
-```
-
-### API Testing
-```bash
-# Using the interactive API docs
-# Visit http://localhost:8000/docs
-```
+You can still test the API interactively via the built-in documentation at `http://localhost:8000/docs`.
 
 ## 📈 Performance & Scalability
 
