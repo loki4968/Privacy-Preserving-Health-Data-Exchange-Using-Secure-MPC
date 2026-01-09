@@ -31,6 +31,162 @@ export const secureComputationService = {
       throw error;
     }
   },
+  
+  /**
+   * Interpret a natural-language computation prompt into a structured spec.
+   * This uses the backend's LLM-ready endpoint if configured, or a heuristic
+   * fallback otherwise.
+   *
+   * @param {string} promptText - Free-text description of the study or survey
+   * @param {string} token - Authentication token
+   * @returns {Promise<Object>} - ComputationSpec-compatible object
+   */
+  interpretPrompt: async (promptText, token) => {
+    try {
+      const response = await fetchApi(`${API_BASE_URL}/secure-computations/interpret-prompt`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ prompt_text: promptText }),
+        token,
+      });
+      return response;
+    } catch (error) {
+      console.error('Error interpreting computation prompt:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Create a dataset descriptor for an organization
+   * @param {Object} datasetData - Dataset information
+   * @param {string} token - Authentication token
+   */
+  createDataset: async (datasetData, token) => {
+    try {
+      const response = await fetchApi(`${API_BASE_URL}/secure-computations/datasets`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(datasetData),
+        token,
+      });
+      return response;
+    } catch (error) {
+      console.error('Error creating dataset:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * List all datasets for the current organization
+   * @param {string} token - Authentication token
+   */
+  listDatasets: async (token) => {
+    try {
+      const response = await fetchApi(`${API_BASE_URL}/secure-computations/datasets`, {
+        method: 'GET',
+        token,
+      });
+      return response;
+    } catch (error) {
+      console.error('Error listing datasets:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Infer schema from a CSV file
+   * @param {string} filePath - Path to CSV file
+   * @param {Object} options - CSV parsing options
+   * @param {string} token - Authentication token
+   */
+  inferSchema: async (filePath, options, token) => {
+    try {
+      const formData = new FormData();
+      formData.append('file_path', filePath);
+      formData.append('has_header', options.has_header ?? true);
+      formData.append('delimiter', options.delimiter ?? ',');
+      
+      const response = await fetchApi(`${API_BASE_URL}/secure-computations/datasets/infer-schema`, {
+        method: 'POST',
+        body: formData,
+        token,
+      });
+      return response;
+    } catch (error) {
+      console.error('Error inferring schema:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Automatically map computation variables to dataset columns
+   * @param {string} computationId - Computation ID
+   * @param {Object} mappingRequest - Mapping request (dataset_id or dataset_columns)
+   * @param {string} token - Authentication token
+   */
+  autoMapColumns: async (computationId, mappingRequest, token) => {
+    try {
+      const response = await fetchApi(`${API_BASE_URL}/secure-computations/column-mapping/auto-map`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          computation_id: computationId,
+          ...mappingRequest,
+        }),
+        token,
+      });
+      return response;
+    } catch (error) {
+      console.error('Error auto-mapping columns:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Get column mappings for a computation
+   * @param {string} computationId - Computation ID
+   * @param {string} token - Authentication token
+   */
+  getColumnMappings: async (computationId, token) => {
+    try {
+      const response = await fetchApi(`${API_BASE_URL}/secure-computations/column-mapping/${computationId}`, {
+        method: 'GET',
+        token,
+      });
+      return response;
+    } catch (error) {
+      console.error('Error getting column mappings:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Confirm a column mapping
+   * @param {number} mappingId - Mapping ID
+   * @param {string} token - Authentication token
+   */
+  confirmMapping: async (mappingId, token) => {
+    try {
+      const response = await fetchApi(`${API_BASE_URL}/secure-computations/column-mapping/confirm`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ mapping_id: mappingId }),
+        token,
+      });
+      return response;
+    } catch (error) {
+      console.error('Error confirming mapping:', error);
+      throw error;
+    }
+  },
 
   /**
    * Submit CSV to a computation with optional column mapping
@@ -71,14 +227,57 @@ export const secureComputationService = {
         },
         body: form,
       });
+      // Read response as text first (can only read once)
+      const responseText = await res.text();
+      
+      // Try to parse as JSON if content-type suggests it
       const contentType = res.headers.get('content-type') || '';
-      const json = contentType.includes('application/json') ? await res.json() : await res.text();
+      let json = null;
+      let errorMessage = `CSV upload failed (${res.status})`;
+      
+      if (contentType.includes('application/json') || responseText.trim().startsWith('{')) {
+        try {
+          json = JSON.parse(responseText);
+        } catch (e) {
+          // Not valid JSON, use text as error message
+          errorMessage = responseText || errorMessage;
+        }
+      } else {
+        // Not JSON, use text as error message
+        errorMessage = responseText || errorMessage;
+      }
+      
       if (!res.ok) {
-        const message = (json && json.detail) ? json.detail : `CSV upload failed (${res.status})`;
-        const err = new Error(message);
+        // Extract error message from various possible response formats
+        if (json) {
+          if (json.detail) {
+            errorMessage = json.detail;
+          } else if (json.message) {
+            errorMessage = json.message;
+          } else if (json.error) {
+            errorMessage = json.error;
+          } else if (typeof json === 'string') {
+            errorMessage = json;
+          }
+        } else if (responseText) {
+          errorMessage = responseText;
+        }
+        
+        console.error('CSV upload error:', { 
+          status: res.status, 
+          statusText: res.statusText,
+          contentType: contentType,
+          responseText: responseText,
+          parsedJson: json 
+        });
+        
+        const err = new Error(errorMessage);
         err.status = res.status;
         throw err;
       }
+      
+      // Success - return parsed JSON or text
+      return json !== null ? json : responseText;
       return json;
     } catch (error) {
       console.error(`Error submitting CSV to computation ${computationId}:`, error);

@@ -1,4 +1,13 @@
-from models import SessionLocal, SecureComputation, ComputationParticipant, ComputationInvitation, ComputationResult, SecureComputationResult
+from models import (
+    SessionLocal,
+    SecureComputation,
+    ComputationParticipant,
+    ComputationInvitation,
+    ComputationResult,
+    SecureComputationResult,
+    ComputationPatientRecord,
+    VariableColumnMapping,
+)
 
 
 def main() -> None:
@@ -28,34 +37,56 @@ def main() -> None:
             print("No computation IDs found. Nothing to delete.")
             return
 
+        # Delete in order: child tables first, then parent table
+        # This ensures foreign key constraints are satisfied
+        
+        # 1. Delete computation_patient_records (stores individual patient data)
+        deleted_patient_records = db.query(ComputationPatientRecord).filter(
+            ComputationPatientRecord.computation_id.in_(computation_ids)
+        ).delete(synchronize_session=False)
+        print(f"  Deleted {deleted_patient_records} patient records")
+
+        # 2. Delete variable_column_mappings (stores column mappings)
+        deleted_mappings = db.query(VariableColumnMapping).filter(
+            VariableColumnMapping.computation_id.in_(computation_ids)
+        ).delete(synchronize_session=False)
+        print(f"  Deleted {deleted_mappings} variable column mappings")
+
+        # 3. Delete computation_results
         deleted_results = db.query(ComputationResult).filter(
             ComputationResult.computation_id.in_(computation_ids)
         ).delete(synchronize_session=False)
 
-        deleted_participants = db.query(ComputationParticipant).filter(
-            ComputationParticipant.computation_id.in_(computation_ids)
-        ).delete(synchronize_session=False)
-
-        deleted_invitations = db.query(ComputationInvitation).filter(
-            ComputationInvitation.computation_id.in_(computation_ids)
-        ).delete(synchronize_session=False)
-
+        # 4. Delete secure_computation_results
         deleted_secure_results = db.query(SecureComputationResult).filter(
             SecureComputationResult.computation_id.in_(computation_ids)
         ).delete(synchronize_session=False)
 
+        # 5. Delete computation_participants
+        deleted_participants = db.query(ComputationParticipant).filter(
+            ComputationParticipant.computation_id.in_(computation_ids)
+        ).delete(synchronize_session=False)
+
+        # 6. Delete computation_invitations
+        deleted_invitations = db.query(ComputationInvitation).filter(
+            ComputationInvitation.computation_id.in_(computation_ids)
+        ).delete(synchronize_session=False)
+
+        # 7. Finally, delete secure_computations (parent table)
         deleted_computations = db.query(SecureComputation).delete(
             synchronize_session=False
         )
 
         db.commit()
 
-        print("Cleanup complete:")
+        print("\n✅ Cleanup complete:")
         print(f"  Secure computations deleted: {deleted_computations}")
         print(f"  Computation results deleted: {deleted_results}")
+        print(f"  Secure computation results deleted: {deleted_secure_results}")
         print(f"  Computation participants deleted: {deleted_participants}")
         print(f"  Computation invitations deleted: {deleted_invitations}")
-        print(f"  Secure computation results deleted: {deleted_secure_results}")
+        print(f"  Patient records deleted: {deleted_patient_records}")
+        print(f"  Variable column mappings deleted: {deleted_mappings}")
 
     except Exception as exc:
         db.rollback()

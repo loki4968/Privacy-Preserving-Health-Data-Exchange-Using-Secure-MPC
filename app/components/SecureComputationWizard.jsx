@@ -21,6 +21,7 @@ const SecureComputationWizard = ({ user, onClose, onComputationCreated }) => {
   // Step 1: Setup
   const [computationTitle, setComputationTitle] = useState('');
   const [computationDescription, setComputationDescription] = useState('');
+  const [interpretedSpec, setInterpretedSpec] = useState(null);
   
   // Step 2: Logic & Data
   const [selectedFunction, setSelectedFunction] = useState('');
@@ -30,7 +31,9 @@ const SecureComputationWizard = ({ user, onClose, onComputationCreated }) => {
   const [singleColumn, setSingleColumn] = useState('');
   const [multiColumns, setMultiColumns] = useState('');
   const [columnIndex, setColumnIndex] = useState('');
-  const [secureAverageThreshold, setSecureAverageThreshold] = useState('160');
+  const [secureAverageThreshold, setSecureAverageThreshold] = useState('');
+  const [cohortAgeMin, setCohortAgeMin] = useState('');
+  const [cohortCondition, setCohortCondition] = useState('');
   
   // Step 3: Security Method
   const [selectedSecurityMethod, setSelectedSecurityMethod] = useState('homomorphic');
@@ -41,8 +44,6 @@ const SecureComputationWizard = ({ user, onClose, onComputationCreated }) => {
   
   // Step 5: Review
   const [confirmationChecked, setConfirmationChecked] = useState(false);
-  const [submitCsvNow, setSubmitCsvNow] = useState(false);
-  const [csvFile, setCsvFile] = useState(null);
   
   // Computation types supported by backend
   const functionOptions = [
@@ -101,9 +102,45 @@ const SecureComputationWizard = ({ user, onClose, onComputationCreated }) => {
         setError('Computation title is required');
         return;
       }
+      // Try to interpret the description into a generic spec
+      if (computationDescription && !interpretedSpec) {
+        const token = user?.token || (typeof window !== 'undefined' ? localStorage.getItem('token') : null);
+        if (token) {
+          setLoading(true);
+          secureComputationService
+            .interpretPrompt(computationDescription, token)
+            .then((spec) => {
+              setInterpretedSpec(spec);
+              console.log('Interpreted computation spec from prompt:', spec);
+              // Auto-select function based on analysis_type if available
+              if (spec.analysis_type && spec.operations && spec.operations.length > 0) {
+                const opType = spec.operations[0].type;
+                // Map analysis_type to function id
+                const typeToFunction = {
+                  'mean_difference': 'secure_average',
+                  'regression': 'secure_regression',
+                  'correlation': 'secure_correlation',
+                  'survival': 'secure_survival',
+                  'cohort_analysis': 'cohort_analysis',
+                  'basic_statistics': 'secure_average'
+                };
+                const mappedFunction = typeToFunction[spec.analysis_type] || opType;
+                if (mappedFunction && functionOptions.find(f => f.id === mappedFunction)) {
+                  setSelectedFunction(mappedFunction);
+                }
+              }
+              setLoading(false);
+            })
+            .catch((e) => {
+              console.warn('Prompt interpretation failed, continuing without spec:', e);
+              setLoading(false);
+            });
+        }
+      }
     } else if (currentStep === 2) {
-      if (!selectedFunction) {
-        setError('Please select a function');
+      // If we have an interpreted spec with operations, function selection is optional
+      if (!selectedFunction && (!interpretedSpec || !interpretedSpec.operations || interpretedSpec.operations.length === 0)) {
+        setError('Please select a computation function or provide a detailed description that can be interpreted');
         return;
       }
       // Dataset/column are optional for this MVP
@@ -151,18 +188,85 @@ const SecureComputationWizard = ({ user, onClose, onComputationCreated }) => {
         setError('Request timed out. Please try again.');
       }, 30000);
       
+      // Determine computation type: prefer spec-derived, then selected function, then default
+      let finalComputationType = selectedFunction;
+      
+      // If we have a spec with operations, derive computation type from it
+      if (interpretedSpec && interpretedSpec.operations && interpretedSpec.operations.length > 0) {
+        const specOpType = interpretedSpec.operations[0].type;
+        // Use spec operation type if no function was manually selected, or if it's more specific
+        if (!selectedFunction || specOpType) {
+          finalComputationType = specOpType || selectedFunction || 'health_statistics';
+        }
+      }
+      
+      // Fallback to default if still no type
+      if (!finalComputationType) {
+        finalComputationType = 'health_statistics';
+      }
+      
       // Prepare the request payload
       const computationData = {
-        computation_type: selectedFunction || 'health_statistics',
+        computation_type: finalComputationType,
         invited_org_ids: selectedParticipants.length > 0 ? selectedParticipants : null,
         security_method: selectedSecurityMethod
       };
 
+      // Only add threshold if explicitly provided (not blood sugar specific)
       if (selectedFunction === 'secure_average' && secureAverageThreshold !== '') {
         const parsed = Number(secureAverageThreshold);
-        if (!Number.isNaN(parsed)) {
+        if (!Number.isNaN(parsed) && parsed > 0) {
           computationData.threshold = parsed;
         }
+      }
+
+      // Build operations from spec or selected function
+      const specOperations = [];
+      
+      // If we have interpreted spec operations, use those (they're more accurate)
+      if (interpretedSpec && interpretedSpec.operations && interpretedSpec.operations.length > 0) {
+        specOperations.push(...interpretedSpec.operations);
+      } else if (selectedFunction) {
+        // Fallback to manual selection
+        const op = {
+          id: 'main_operation',
+          type: selectedFunction
+        };
+        if (selectedFunction === 'cohort_analysis') {
+          const criteria = {};
+          if (cohortAgeMin !== '') {
+            const ageVal = Number(cohortAgeMin);
+            if (!Number.isNaN(ageVal)) {
+              criteria.age_min = ageVal;
+            }
+          }
+          if (cohortCondition && cohortCondition.trim()) {
+            criteria.condition = cohortCondition.trim();
+          }
+          if (Object.keys(criteria).length > 0) {
+            op.options = criteria;
+          }
+        }
+        specOperations.push(op);
+      }
+
+      // Build final spec
+      const spec = interpretedSpec
+        ? {
+            // Merge interpreted spec with wizard selections
+            ...interpretedSpec,
+            prompt_text: interpretedSpec.prompt_text || computationDescription || computationTitle || '',
+            operations: specOperations.length > 0 ? specOperations : (interpretedSpec.operations || []),
+          }
+        : {
+            prompt_text: computationDescription || computationTitle || '',
+            variables: [],
+            operations: specOperations
+          };
+
+      // Always include spec if we have prompt text or operations
+      if (spec.prompt_text || spec.operations.length > 0) {
+        computationData.spec = spec;
       }
       
       console.log('Creating computation with data:', computationData);
@@ -184,25 +288,7 @@ const SecureComputationWizard = ({ user, onClose, onComputationCreated }) => {
       // Show success message
       toast.success(`Secure computation created successfully! ID: ${computationId}`);
 
-      // Optionally submit CSV immediately
-      if (submitCsvNow && csvFile) {
-        try {
-          const csvOptions = {
-            has_header: hasHeader,
-            delimiter,
-            column: singleColumn || undefined,
-            columns: multiColumns || undefined,
-            column_index: columnIndex !== '' ? parseInt(columnIndex, 10) : undefined,
-            description: `Wizard CSV upload for ${computationTitle || 'computation'}`,
-          };
-          const submitRes = await secureComputationService.submitCsv(computationId, csvFile, csvOptions, user.token);
-          toast.success('CSV submitted successfully');
-          console.log('CSV submit result:', submitRes);
-        } catch (csvErr) {
-          console.error('CSV submission error:', csvErr);
-          toast.error(csvErr?.message || 'Failed to submit CSV');
-        }
-      }
+      // Note: CSV upload removed - participants will submit their own data
 
       // Notify parent component about the new computation
       if (onComputationCreated) {
@@ -212,6 +298,13 @@ const SecureComputationWizard = ({ user, onClose, onComputationCreated }) => {
       // Force close the wizard
       setLoading(false);
       onClose();
+      
+      // Redirect to computation details page
+      if (computationId && computationId !== 'unknown') {
+        setTimeout(() => {
+          window.location.href = `/secure-computations/${computationId}`;
+        }, 500);
+      }
     } catch (err) {
       // Clear timeout on error
       if (timeoutId) {
@@ -270,16 +363,48 @@ const SecureComputationWizard = ({ user, onClose, onComputationCreated }) => {
               
               <div className="space-y-2">
                 <label className="block text-sm font-medium text-gray-700">
-                  Description & Purpose
+                  Description & Purpose <span className="text-blue-600 text-xs">(AI-Powered)</span>
                 </label>
                 <textarea
                   className="w-full p-3 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-sm"
-                  placeholder="Describe the purpose of this computation..."
-                  rows={4}
+                  placeholder="Describe your research question or survey purpose in natural language. Example: 'Compare average fasting blood glucose levels between diabetic and non-diabetic patients, adjusting for age and BMI over the last 6 months.'"
+                  rows={5}
                   value={computationDescription}
-                  onChange={(e) => setComputationDescription(e.target.value)}
+                  onChange={(e) => {
+                    setComputationDescription(e.target.value);
+                    setInterpretedSpec(null); // Reset spec when description changes
+                  }}
                 />
-                <p className="text-xs text-gray-500 mt-1">Provide context about why this computation is being performed and how results will be used.</p>
+                <p className="text-xs text-gray-500 mt-1">
+                  Provide a detailed description of your research question or survey. The system will automatically extract variables, analysis type, and population criteria.
+                </p>
+                {interpretedSpec && (
+                  <div className="mt-3 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                    <h4 className="text-sm font-semibold text-blue-900 mb-2">✨ Interpreted Specification</h4>
+                    {interpretedSpec.research_question && (
+                      <p className="text-sm text-blue-800 mb-2">
+                        <strong>Research Question:</strong> {interpretedSpec.research_question}
+                      </p>
+                    )}
+                    {interpretedSpec.analysis_type && (
+                      <p className="text-sm text-blue-800 mb-2">
+                        <strong>Analysis Type:</strong> <span className="capitalize">{interpretedSpec.analysis_type.replace('_', ' ')}</span>
+                      </p>
+                    )}
+                    {interpretedSpec.variables && interpretedSpec.variables.length > 0 && (
+                      <div className="mt-2">
+                        <p className="text-sm font-medium text-blue-900 mb-1">Variables Detected:</p>
+                        <ul className="list-disc list-inside text-xs text-blue-700 space-y-1">
+                          {interpretedSpec.variables.map((v, idx) => (
+                            <li key={idx}>
+                              {v.name} {v.unit && `(${v.unit})`} {v.role && `[${v.role}]`}
+                            </li>
+                          ))}
+                        </ul>
+              </div>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -297,8 +422,18 @@ const SecureComputationWizard = ({ user, onClose, onComputationCreated }) => {
             <div className="space-y-5 bg-gray-50 p-4 rounded-lg">
               <div className="space-y-2">
                 <label className="block text-sm font-medium text-gray-700">
-                  Computation Function <span className="text-red-500">*</span>
+                  Computation Function {interpretedSpec && interpretedSpec.operations && interpretedSpec.operations.length > 0 ? <span className="text-blue-600 text-xs">(Auto-selected from description)</span> : <span className="text-red-500">*</span>}
                 </label>
+                {interpretedSpec && interpretedSpec.operations && interpretedSpec.operations.length > 0 && (
+                  <div className="mb-3 p-3 bg-green-50 border border-green-200 rounded-lg">
+                    <p className="text-sm text-green-800">
+                      <strong>Auto-selected:</strong> {interpretedSpec.operations[0].type || 'N/A'}
+                    </p>
+                    <p className="text-xs text-green-700 mt-1">
+                      You can override this selection if needed
+                    </p>
+                  </div>
+                )}
                 <div className="space-y-4">
                   {/* Group computations by category */}
                   {Object.entries(
@@ -365,19 +500,56 @@ const SecureComputationWizard = ({ user, onClose, onComputationCreated }) => {
                 {selectedFunction === 'secure_average' && (
                   <div className="space-y-2 mt-4">
                     <label className="block text-sm font-medium text-gray-700">
-                      Threshold for High Blood Sugar (mg/dL)
+                      Threshold Value (Optional)
                     </label>
                     <input
                       type="number"
                       className="w-full p-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
                       value={secureAverageThreshold}
                       onChange={(e) => setSecureAverageThreshold(e.target.value)}
-                      placeholder="e.g., 160"
+                      placeholder="Enter threshold if needed for your analysis"
                       min="0"
                     />
+                    <p className="text-xs text-gray-500">
+                      Optional: Specify a threshold value for classification or filtering purposes
+                    </p>
                   </div>
                 )}
               </div>
+
+              {selectedFunction === 'cohort_analysis' && (
+                <div className="mt-4 space-y-3 bg-white border border-gray-200 rounded-lg p-4">
+                  <div className="text-sm font-medium text-gray-800">
+                    Cohort Criteria
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs text-gray-600 mb-1">
+                        Minimum Age
+                      </label>
+                      <input
+                        type="number"
+                        className="w-full border border-gray-300 rounded p-2 text-sm"
+                        value={cohortAgeMin}
+                        onChange={(e) => setCohortAgeMin(e.target.value)}
+                        placeholder="e.g., 18"
+                        min="0"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-600 mb-1">
+                        Condition / Diagnosis Keyword
+                      </label>
+                      <input
+                        className="w-full border border-gray-300 rounded p-2 text-sm"
+                        value={cohortCondition}
+                        onChange={(e) => setCohortCondition(e.target.value)}
+                        placeholder="e.g., diabetes"
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {/* Optional CSV Column Mapping */}
               <div className="bg-white border border-gray-200 rounded-lg p-4">
@@ -704,31 +876,18 @@ const SecureComputationWizard = ({ user, onClose, onComputationCreated }) => {
               </div>
             </div>
             
-            <div className="bg-white border border-gray-200 rounded-lg p-4">
-              <h4 className="font-medium text-gray-800 mb-2">Optional: Submit CSV Now</h4>
-              <div className="flex items-center mb-3">
-                <input
-                  type="checkbox"
-                  id="submitCsvNow"
-                  className="mr-2"
-                  checked={submitCsvNow}
-                  onChange={(e) => setSubmitCsvNow(e.target.checked)}
-                />
-                <label htmlFor="submitCsvNow" className="text-sm text-gray-700">Submit a CSV to this computation immediately after creation</label>
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+              <div className="flex items-start gap-3">
+                <Info className="w-5 h-5 text-blue-600 mt-0.5" />
+                <div>
+                  <h4 className="font-medium text-blue-900 mb-1">Data Submission</h4>
+                  <p className="text-sm text-blue-700">
+                    After creating this computation, invited participants will receive a request to join and submit their data. 
+                    As the computation creator, you do not need to upload data here. Each participant will submit their own data 
+                    through the computation detail page.
+                  </p>
               </div>
-              {submitCsvNow && (
-                <div className="flex items-center gap-3">
-                  <input
-                    type="file"
-                    accept=".csv"
-                    onChange={(e) => setCsvFile(e.target.files?.[0] || null)}
-                    className="text-sm"
-                  />
-                  {csvFile && (
-                    <span className="text-xs text-gray-600">{csvFile.name}</span>
-                  )}
                 </div>
-              )}
             </div>
 
             <div className="flex items-start mt-4 bg-blue-50 p-4 rounded-md border border-blue-100">

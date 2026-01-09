@@ -89,18 +89,27 @@ export default function DashboardPage() {
         }
       });
 
-      const data = await response.json();
+      let data = {};
+      try {
+        const text = await response.text();
+        data = text ? JSON.parse(text) : {};
+      } catch (e) {
+        console.warn("Failed to parse response as JSON:", e);
+        data = {};
+      }
 
       if (response.ok) {
         console.log("Fetched records:", data);
-        setRecords(data);
+        setRecords(Array.isArray(data) ? data : []);
       } else {
         console.error("Failed to fetch records:", response.status, data);
         if (response.status === 401) {
           toast.error("Session expired. Please log in again");
           router.replace('/login');
+        } else if (response.status === 429) {
+          toast.error("Too many requests. Please wait a moment and try again.");
         } else {
-          toast.error(data.detail || "Failed to load records");
+          toast.error(data.detail || data.message || "Failed to load records");
         }
       }
     } catch (error) {

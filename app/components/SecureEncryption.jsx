@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useAuth } from '../contexts/AuthContext';
+import { useAuth } from '../context/AuthContext';
 import { toast } from 'react-hot-toast';
 
 const SecureEncryption = ({ computationId, onEncryptionComplete }) => {
@@ -7,54 +7,189 @@ const SecureEncryption = ({ computationId, onEncryptionComplete }) => {
   const [encryptionParams, setEncryptionParams] = useState(null);
   const [dataToEncrypt, setDataToEncrypt] = useState('');
   const [encryptedData, setEncryptedData] = useState(null);
+  const [csvFile, setCsvFile] = useState(null);
+  const [inputMethod, setInputMethod] = useState('manual'); // 'manual' or 'csv'
   const { user } = useAuth();
   const token = user?.token;
 
   const fetchEncryptionParams = async () => {
     setIsLoading(true);
     try {
-      const response = await fetch(`http://localhost:8000/secure-computations/${computationId}/client-encrypt`, {
+      console.log('Fetching encryption parameters for computation:', computationId);
+      console.log('Token present:', !!token);
+      
+      const response = await fetch(`http://localhost:8000/secure-computations/computations/${computationId}/client-encrypt`, {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${token}`
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
         }
       });
 
+      console.log('Response status:', response.status);
+      console.log('Response ok:', response.ok);
+      console.log('Response headers:', Object.fromEntries(response.headers.entries()));
+
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.detail || 'Failed to fetch encryption parameters');
+        let errorMessage = `Failed to fetch encryption parameters (Status: ${response.status})`;
+        try {
+          const text = await response.text();
+          console.error('Raw response text:', text);
+          console.error('Response status:', response.status);
+          console.error('Response statusText:', response.statusText);
+          
+          if (text) {
+            try {
+              const errorData = JSON.parse(text);
+              console.error('Parsed error response data:', errorData);
+              
+              // Try multiple possible error message fields
+              errorMessage = errorData.detail || 
+                            errorData.message || 
+                            (errorData.error && (typeof errorData.error === 'string' ? errorData.error : errorData.error.message)) ||
+                            errorData.msg ||
+                            text ||
+                            `Server error (${response.status}): ${response.statusText}`;
+            } catch (parseError) {
+              // Not JSON, use text directly
+              errorMessage = text || `Server error (${response.status}): ${response.statusText}`;
+            }
+          } else {
+            errorMessage = `Server returned empty response (Status: ${response.status})`;
+          }
+        } catch (readError) {
+          console.error('Error reading response:', readError);
+          errorMessage = `Server error (${response.status}): ${response.statusText || 'Unknown error'}`;
+        }
+        throw new Error(errorMessage);
       }
 
       const data = await response.json();
+      console.log('Encryption parameters received:', data);
       setEncryptionParams(data);
       toast.success('Encryption parameters fetched successfully');
     } catch (error) {
-      toast.error(error.message);
+      console.error('Error fetching encryption parameters:', error);
+      toast.error(error.message || 'Failed to fetch encryption parameters');
     } finally {
       setIsLoading(false);
     }
   };
 
-  const encryptData = () => {
+  const parseCsvFile = (file) => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      
+      reader.onload = (e) => {
+        try {
+          const text = e.target.result;
+          const lines = text.split('\n').filter(line => line.trim());
+          
+          // Parse CSV - handle both comma and other delimiters
+          const dataPoints = [];
+          let delimiter = ',';
+          
+          // Try to detect delimiter
+          if (text.includes(';')) delimiter = ';';
+          else if (text.includes('\t')) delimiter = '\t';
+          
+          lines.forEach((line, index) => {
+            const trimmedLine = line.trim();
+            if (!trimmedLine) return;
+            
+            // Split by delimiter and extract numeric values
+            const values = trimmedLine.split(delimiter);
+            values.forEach(value => {
+              const trimmed = value.trim();
+              if (trimmed) {
+                const num = parseFloat(trimmed);
+                if (!isNaN(num)) {
+                  dataPoints.push(num);
+                }
+              }
+            });
+          });
+          
+          if (dataPoints.length === 0) {
+            reject(new Error('No numeric values found in CSV file. Please ensure the file contains numeric data.'));
+            return;
+          }
+          
+          resolve(dataPoints);
+        } catch (error) {
+          reject(new Error(`Failed to parse CSV file: ${error.message}`));
+        }
+      };
+      
+      reader.onerror = () => {
+        reject(new Error('Failed to read CSV file'));
+      };
+      
+      reader.readAsText(file);
+    });
+  };
+
+  const handleCsvFileChange = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    
+    if (!file.name.endsWith('.csv')) {
+      toast.error('Please select a CSV file');
+      return;
+    }
+    
+    setCsvFile(file);
+    setIsLoading(true);
+    
+    try {
+      const dataPoints = await parseCsvFile(file);
+      // Convert to comma-separated string for display
+      setDataToEncrypt(dataPoints.join(', '));
+      toast.success(`Loaded ${dataPoints.length} values from CSV file`);
+    } catch (error) {
+      toast.error(error.message);
+      setCsvFile(null);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const encryptData = async () => {
     if (!encryptionParams) {
       toast.error('Please fetch encryption parameters first');
       return;
     }
 
-    if (!dataToEncrypt) {
-      toast.error('Please enter data to encrypt');
+    let dataPoints = [];
+    
+    // Get data from CSV file or manual input
+    if (inputMethod === 'csv' && csvFile) {
+      try {
+        setIsLoading(true);
+        dataPoints = await parseCsvFile(csvFile);
+      } catch (error) {
+        toast.error(error.message);
+        setIsLoading(false);
+        return;
+      }
+    } else {
+      if (!dataToEncrypt.trim()) {
+        toast.error('Please enter data to encrypt or upload a CSV file');
       return;
+    }
+
+      // Parse the input data
+      dataPoints = dataToEncrypt.split(',').map(item => parseFloat(item.trim()));
+      
+      // Check for invalid data
+      if (dataPoints.some(isNaN)) {
+        toast.error('Invalid data format. Please enter comma-separated numbers.');
+        return;
+      }
     }
 
     setIsLoading(true);
     try {
-      // Parse the input data
-      const dataPoints = dataToEncrypt.split(',').map(item => parseFloat(item.trim()));
-      
-      // Check for invalid data
-      if (dataPoints.some(isNaN)) {
-        throw new Error('Invalid data format. Please enter comma-separated numbers.');
-      }
 
       let result;
       
@@ -74,9 +209,9 @@ const SecureEncryption = ({ computationId, onEncryptionComplete }) => {
       setEncryptedData(result);
       toast.success('Data encrypted successfully');
       
-      // Notify parent component
+      // Notify parent component with both encrypted result and raw data points
       if (onEncryptionComplete) {
-        onEncryptionComplete(result);
+        onEncryptionComplete(result, dataPoints);
       }
     } catch (error) {
       toast.error(error.message);
@@ -192,6 +327,36 @@ const SecureEncryption = ({ computationId, onEncryptionComplete }) => {
           </div>
           
           <div className="mb-4">
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Data Input Method
+            </label>
+            <div className="flex gap-4 mb-4">
+              <label className="flex items-center">
+                <input
+                  type="radio"
+                  name="inputMethod"
+                  value="manual"
+                  checked={inputMethod === 'manual'}
+                  onChange={(e) => setInputMethod(e.target.value)}
+                  className="mr-2"
+                />
+                <span className="text-sm text-gray-700">Manual Entry</span>
+              </label>
+              <label className="flex items-center">
+                <input
+                  type="radio"
+                  name="inputMethod"
+                  value="csv"
+                  checked={inputMethod === 'csv'}
+                  onChange={(e) => setInputMethod(e.target.value)}
+                  className="mr-2"
+                />
+                <span className="text-sm text-gray-700">CSV File Upload</span>
+              </label>
+            </div>
+
+            {inputMethod === 'manual' ? (
+              <div>
             <label htmlFor="dataToEncrypt" className="block text-sm font-medium text-gray-700 mb-1">
               Enter Data (comma-separated numbers)
             </label>
@@ -203,11 +368,39 @@ const SecureEncryption = ({ computationId, onEncryptionComplete }) => {
               rows="3"
               placeholder="e.g., 45.2, 67.8, 32.1"
             />
+              </div>
+            ) : (
+              <div>
+                <label htmlFor="csvFile" className="block text-sm font-medium text-gray-700 mb-1">
+                  Upload CSV File
+                </label>
+                <input
+                  type="file"
+                  id="csvFile"
+                  accept=".csv"
+                  onChange={handleCsvFileChange}
+                  className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+                />
+                {csvFile && (
+                  <p className="mt-2 text-sm text-gray-600">
+                    Selected: <span className="font-medium">{csvFile.name}</span>
+                    {dataToEncrypt && (
+                      <span className="ml-2 text-gray-500">
+                        ({dataToEncrypt.split(',').length} values loaded)
+                      </span>
+                    )}
+                  </p>
+                )}
+                <p className="mt-1 text-xs text-gray-500">
+                  CSV file should contain numeric values. All numeric values from all columns will be extracted.
+                </p>
+              </div>
+            )}
           </div>
           
           <button
             onClick={encryptData}
-            disabled={isLoading || !dataToEncrypt}
+            disabled={isLoading || (inputMethod === 'manual' && !dataToEncrypt) || (inputMethod === 'csv' && !csvFile)}
             className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 disabled:opacity-50"
           >
             {isLoading ? 'Encrypting...' : 'Encrypt Data'}

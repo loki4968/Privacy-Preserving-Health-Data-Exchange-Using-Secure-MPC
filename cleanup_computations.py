@@ -119,6 +119,15 @@ def cleanup_old_computations(db_path):
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
 
+    # Disable foreign key constraints temporarily to allow deletion
+    # We'll manually ensure referential integrity by deleting child tables first
+    cursor.execute("PRAGMA foreign_keys = OFF")
+    # Verify it's disabled
+    cursor.execute("PRAGMA foreign_keys")
+    fk_status = cursor.fetchone()[0]
+    if fk_status != 0:
+        print(f"⚠️  Warning: Foreign keys are still enabled (status: {fk_status})")
+
     try:
         # Create backup before cleanup
         backup_name = f"{db_path}_backup_before_cleanup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
@@ -143,6 +152,23 @@ def cleanup_old_computations(db_path):
         cursor.execute("SELECT COUNT(*) FROM computation_participants")
         initial_participants = cursor.fetchone()[0]
         print(f"  Computation participants: {initial_participants}")
+
+        # Try to get counts for optional tables
+        try:
+            cursor.execute("SELECT COUNT(*) FROM computation_patient_records")
+            initial_patient_records = cursor.fetchone()[0]
+            print(f"  Computation patient records: {initial_patient_records}")
+        except sqlite3.OperationalError:
+            initial_patient_records = 0
+            print(f"  Computation patient records: (table not found)")
+
+        try:
+            cursor.execute("SELECT COUNT(*) FROM variable_column_mappings")
+            initial_mappings = cursor.fetchone()[0]
+            print(f"  Variable column mappings: {initial_mappings}")
+        except sqlite3.OperationalError:
+            initial_mappings = 0
+            print(f"  Variable column mappings: (table not found)")
 
         # Find computations to remove (completed or old ones)
         # Remove computations that are:
@@ -179,43 +205,162 @@ def cleanup_old_computations(db_path):
             return
 
         # Remove computation results first (foreign key constraints)
-        print("\n🗑️ Removing computation results...")
-        if computation_ids_to_remove:
-            # Remove from computation_results
-            placeholders = ','.join('?' * len(computation_ids_to_remove))
-            cursor.execute(f"""
-                DELETE FROM computation_results
-                WHERE computation_id IN ({placeholders})
-            """, computation_ids_to_remove)
-
-            # Remove from secure_computation_results
-            cursor.execute(f"""
-                DELETE FROM secure_computation_results
-                WHERE computation_id IN ({placeholders})
-            """, computation_ids_to_remove)
-
-            # Remove computation participants
-            cursor.execute(f"""
-                DELETE FROM computation_participants
-                WHERE computation_id IN ({placeholders})
-            """, computation_ids_to_remove)
-
-        # Remove computation invitations (note: invitations.computation_id references the STRING computation_id)
+        # Order matters: delete child tables before parent tables
+        print("\n🗑️ Removing computation-related data...")
         if computation_ids_to_remove:
             placeholders = ','.join('?' * len(computation_ids_to_remove))
-            cursor.execute(f"""
-                DELETE FROM computation_invitations
-                WHERE computation_id IN ({placeholders})
-            """, computation_ids_to_remove)
+            
+            # 1. Remove computation_patient_records (stores individual patient data)
+            try:
+                cursor.execute(f"""
+                    DELETE FROM computation_patient_records
+                    WHERE computation_id IN ({placeholders})
+                """, computation_ids_to_remove)
+                deleted_patient_records = cursor.rowcount
+                print(f"  Removed {deleted_patient_records} patient records")
+            except sqlite3.OperationalError as e:
+                print(f"  Note: computation_patient_records table may not exist: {e}")
+            
+            # 2. Remove variable_column_mappings (stores column mappings)
+            try:
+                cursor.execute(f"""
+                    DELETE FROM variable_column_mappings
+                    WHERE computation_id IN ({placeholders})
+                """, computation_ids_to_remove)
+                deleted_mappings = cursor.rowcount
+                print(f"  Removed {deleted_mappings} variable column mappings")
+            except sqlite3.OperationalError as e:
+                print(f"  Note: variable_column_mappings table may not exist: {e}")
+            
+            # 3. Remove from computation_results
+            try:
+                cursor.execute(f"""
+                    DELETE FROM computation_results
+                    WHERE computation_id IN ({placeholders})
+                """, computation_ids_to_remove)
+                deleted_results = cursor.rowcount
+                print(f"  Removed {deleted_results} computation results")
+            except (sqlite3.OperationalError, sqlite3.IntegrityError) as e:
+                print(f"  Error removing computation_results: {e}")
+                deleted_results = 0
+
+            # 4. Remove from secure_computation_results
+            try:
+                cursor.execute(f"""
+                    DELETE FROM secure_computation_results
+                    WHERE computation_id IN ({placeholders})
+                """, computation_ids_to_remove)
+                deleted_secure_results = cursor.rowcount
+                print(f"  Removed {deleted_secure_results} secure computation results")
+            except (sqlite3.OperationalError, sqlite3.IntegrityError) as e:
+                print(f"  Error removing secure_computation_results: {e}")
+                deleted_secure_results = 0
+
+            # 5. Remove computation participants
+            try:
+                cursor.execute(f"""
+                    DELETE FROM computation_participants
+                    WHERE computation_id IN ({placeholders})
+                """, computation_ids_to_remove)
+                deleted_participants = cursor.rowcount
+                print(f"  Removed {deleted_participants} computation participants")
+            except (sqlite3.OperationalError, sqlite3.IntegrityError) as e:
+                print(f"  Error removing computation_participants: {e}")
+                deleted_participants = 0
+
+        # 6. Remove computation invitations (note: invitations.computation_id references the STRING computation_id)
+        if computation_ids_to_remove:
+            placeholders = ','.join('?' * len(computation_ids_to_remove))
+            try:
+                cursor.execute(f"""
+                    DELETE FROM computation_invitations
+                    WHERE computation_id IN ({placeholders})
+                """, computation_ids_to_remove)
+                deleted_invitations = cursor.rowcount
+                print(f"  Removed {deleted_invitations} computation invitations")
+            except sqlite3.OperationalError as e:
+                print(f"  Note: computation_invitations table may not exist: {e}")
 
         # Finally remove the secure computations themselves
-        if secure_comp_ids_to_remove:
-            placeholders = ','.join('?' * len(secure_comp_ids_to_remove))
+        # Use computation_id (string UUID) instead of id, since all foreign keys reference computation_id
+        if computation_ids_to_remove:
+            placeholders = ','.join('?' * len(computation_ids_to_remove))
+            
+            # Debug: Check for any remaining references before deletion
+            print("\n🔍 Checking for remaining references...")
+            try:
+                cursor.execute(f"""
+                    SELECT COUNT(*) FROM computation_patient_records
+                    WHERE computation_id IN ({placeholders})
+                """, computation_ids_to_remove)
+                remaining_patient_records = cursor.fetchone()[0]
+                if remaining_patient_records > 0:
+                    print(f"  ⚠️  Warning: {remaining_patient_records} patient records still exist")
+            except sqlite3.OperationalError:
+                pass
+            
+            try:
+                cursor.execute(f"""
+                    SELECT COUNT(*) FROM variable_column_mappings
+                    WHERE computation_id IN ({placeholders})
+                """, computation_ids_to_remove)
+                remaining_mappings = cursor.fetchone()[0]
+                if remaining_mappings > 0:
+                    print(f"  ⚠️  Warning: {remaining_mappings} variable mappings still exist")
+            except sqlite3.OperationalError:
+                pass
+            
             cursor.execute(f"""
-                DELETE FROM secure_computations
-                WHERE id IN ({placeholders})
-            """, secure_comp_ids_to_remove)
+                SELECT COUNT(*) FROM computation_results
+                WHERE computation_id IN ({placeholders})
+            """, computation_ids_to_remove)
+            remaining_results = cursor.fetchone()[0]
+            if remaining_results > 0:
+                print(f"  ⚠️  Warning: {remaining_results} computation results still exist")
+            
+            cursor.execute(f"""
+                SELECT COUNT(*) FROM secure_computation_results
+                WHERE computation_id IN ({placeholders})
+            """, computation_ids_to_remove)
+            remaining_secure_results = cursor.fetchone()[0]
+            if remaining_secure_results > 0:
+                print(f"  ⚠️  Warning: {remaining_secure_results} secure computation results still exist")
+            
+            cursor.execute(f"""
+                SELECT COUNT(*) FROM computation_participants
+                WHERE computation_id IN ({placeholders})
+            """, computation_ids_to_remove)
+            remaining_participants = cursor.fetchone()[0]
+            if remaining_participants > 0:
+                print(f"  ⚠️  Warning: {remaining_participants} computation participants still exist")
+            
+            try:
+                cursor.execute(f"""
+                    SELECT COUNT(*) FROM computation_invitations
+                    WHERE computation_id IN ({placeholders})
+                """, computation_ids_to_remove)
+                remaining_invitations = cursor.fetchone()[0]
+                if remaining_invitations > 0:
+                    print(f"  ⚠️  Warning: {remaining_invitations} computation invitations still exist")
+            except sqlite3.OperationalError:
+                pass
+            
+            # Now delete the secure computations
+            try:
+                cursor.execute(f"""
+                    DELETE FROM secure_computations
+                    WHERE computation_id IN ({placeholders})
+                """, computation_ids_to_remove)
+                deleted_computations = cursor.rowcount
+                print(f"  Removed {deleted_computations} secure computations")
+            except (sqlite3.OperationalError, sqlite3.IntegrityError) as e:
+                print(f"  ❌ Error removing secure_computations: {e}")
+                print(f"  This might indicate remaining references. Check the warnings above.")
+                raise
 
+        # Re-enable foreign key constraints
+        cursor.execute("PRAGMA foreign_keys = ON")
+        
         # Commit the changes
         conn.commit()
 
@@ -238,17 +383,38 @@ def cleanup_old_computations(db_path):
         final_participants = cursor.fetchone()[0]
         print(f"  Computation participants: {final_participants}")
 
+        # Try to get final counts for optional tables
+        try:
+            cursor.execute("SELECT COUNT(*) FROM computation_patient_records")
+            final_patient_records = cursor.fetchone()[0]
+            print(f"  Computation patient records: {final_patient_records}")
+        except sqlite3.OperationalError:
+            final_patient_records = 0
+
+        try:
+            cursor.execute("SELECT COUNT(*) FROM variable_column_mappings")
+            final_mappings = cursor.fetchone()[0]
+            print(f"  Variable column mappings: {final_mappings}")
+        except sqlite3.OperationalError:
+            final_mappings = 0
+
         # Calculate removed counts
         removed_computations = initial_computations - final_computations
         removed_results = initial_results - final_results
         removed_secure_results = initial_secure_results - final_secure_results
         removed_participants = initial_participants - final_participants
+        removed_patient_records = initial_patient_records - final_patient_records
+        removed_mappings = initial_mappings - final_mappings
 
         print("\n✅ Cleanup Summary:")
         print(f"  Computations removed: {removed_computations}")
         print(f"  Results removed: {removed_results}")
         print(f"  Secure results removed: {removed_secure_results}")
         print(f"  Participants removed: {removed_participants}")
+        if initial_patient_records > 0:
+            print(f"  Patient records removed: {removed_patient_records}")
+        if initial_mappings > 0:
+            print(f"  Variable mappings removed: {removed_mappings}")
         print(f"  Backup created: {backup_name}")
 
         # Check database size

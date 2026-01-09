@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useAuth } from '../contexts/AuthContext';
+import { useAuth } from '../context/AuthContext';
 import { toast } from 'react-hot-toast';
 import ComputationResults from './ComputationResults';
 import SecureEncryption from './SecureEncryption';
@@ -146,7 +146,7 @@ const SecureComputation = () => {
   const handleVerifyComputation = async (computationId) => {
     setIsLoading(true);
     try {
-      const response = await fetch(`http://localhost:8000/secure-computations/${computationId}/verify`, {
+      const response = await fetch(`http://localhost:8000/secure-computations/computations/${computationId}/verify`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`
@@ -176,7 +176,7 @@ const SecureComputation = () => {
   const handleTriggerComputation = async (computationId) => {
     setIsLoading(true);
     try {
-      const response = await fetch(`http://localhost:8000/secure-computations/${computationId}/compute`, {
+      const response = await fetch(`http://localhost:8000/secure-computations/computations/${computationId}/compute`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`
@@ -438,7 +438,7 @@ const SecureComputation = () => {
                         onClick={async () => {
                     try {
                       setLoading(true);
-                      const response = await fetch(`http://localhost:8000/secure-computations/${selectedComputationForEncryption}/data`, {
+                      const response = await fetch(`http://localhost:8000/secure-computations/computations/${selectedComputationForEncryption}/submit`, {
                         method: 'POST',
                         headers: {
                           'Content-Type': 'application/json',

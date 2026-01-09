@@ -1,0 +1,19 @@
+Computation Type,Title,Prompt Example,CSV Columns Required,Security Method,Min Participants,Expected Result
+Basic Statistics - Average,Average Patient Age,"Calculate the average age of all patients across hospitals",Patient_ID,Age,homomorphic,1,Average age value
+Basic Statistics - Sum,Total Patient Count,"What is the total number of patients across all organizations?",Patient_ID,Count,standard,1,Sum of all counts
+Basic Statistics - Secure Variance,Blood Sugar Variability,"Calculate the variance in blood sugar levels across all patients",Patient_ID,Blood_Sug,homomorphic,1,Variance value
+Advanced Statistics - Correlation,Age vs Blood Sugar Correlation,"What is the correlation between patient age and blood sugar levels?",Patient_ID,Age,Blood_Sug,hybrid,2,Correlation coefficient (-1 to 1)
+Advanced Statistics - Regression,Predict Blood Sugar from Age,"Build a regression model to predict blood sugar based on age",Patient_ID,Age,Blood_Sug,hybrid,2,Regression coefficients and R-squared
+Clinical Analysis - Survival,Cancer Survival Analysis,"Analyze survival rates for cancer patients by treatment type",Patient_ID,Survival_Months,Event_Occurred,Treatment_Type,hybrid,2,Median survival and survival curves
+Machine Learning - Logistic Regression,Diabetes Prediction Model,"Train a model to predict diabetes based on patient metrics",Patient_ID,Age,BMI,Blood_Sug,Glucose,hybrid,3,Model accuracy and feature importance
+Machine Learning - Random Forest,Heart Disease Risk Prediction,"Build a random forest model to predict heart disease risk",Patient_ID,Age,BP_Systolic,BP_Diastolic,Cholesterol,hybrid,3,Model accuracy and feature rankings
+Machine Learning - Anomaly Detection,Detect Abnormal Vital Signs,"Identify patients with abnormal vital signs that need attention",Patient_ID,Heart_Rate,BP_Systolic,Temperature,hybrid,2,List of anomalous patients
+Clinical Analysis - Cohort,Patient Cohort Analysis,"Analyze patient cohorts by diagnosis and treatment outcomes",Patient_ID,Age,Diagnosis,Treatment_Group,Outcome,hybrid,2,Cohort statistics and comparisons
+Pharmacovigilance - Drug Safety,Adverse Drug Reaction Detection,"Detect adverse drug reactions across patient populations",Patient_ID,Age,Drug_Name,Days_on_Medication,Adverse_Event,hybrid,2,Adverse event rates and risk factors
+Public Health - Epidemiological,Disease Outbreak Analysis,"Analyze disease patterns and outbreak trends across regions",Patient_ID,Age,Diagnosis,Region,Date,hybrid,2,Epidemiological statistics
+Genomics - GWAS,Genetic Association Study,"Identify genetic variants associated with disease risk",Patient_ID,SNP1,SNP2,SNP3,Disease_Status,hybrid,3,Genetic associations and p-values
+Precision Medicine - Pharmacogenomics,Drug-Gene Interaction Analysis,"Analyze how genetic variants affect drug response",Patient_ID,Gene_Variant,Drug_Name,Response_Level,hybrid,2,Drug-gene interaction effects
+Filter - Categorical,Blood Sugar Filter,"List all patients with blood sugar level higher than 130",Patient_ID,Blood_Sug,Age,Gender,homomorphic,1,List of matching patients
+Filter - Categorical,Cancer Stage Filter,"List patients with cancer stage 2 and stage 4",Patient_ID,Cancer_Type,Cancer_Stage,Age,homomorphic,1,List of matching patients
+Filter - Categorical,Age Range Filter,"Find all patients between 40 and 60 years old",Patient_ID,Age,Gender,Diagnosis,homomorphic,1,List of matching patients
+

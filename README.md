@@ -69,6 +69,7 @@ A comprehensive, production-ready platform for secure health data exchange betwe
 - 🌐 **WebSocket Real-time Updates** for collaborative computations
 - 🤖 **Machine Learning Integration** with federated learning support
 - 📋 **Report Generation** and data export capabilities
+- 🧊 **LLM-formatted results with Raw JSON + Visual Analytics toggle** for categorical filters
 - 🔄 **Automated Backup** and data recovery systems
 - 📧 **Email Notifications** and OTP verification
 - 🧠 **Enhanced ML Algorithms** with advanced neural networks and deep learning
@@ -681,6 +682,23 @@ The original project used:
 - Jest/React Testing Library for frontend tests
 
 You can still test the API interactively via the built-in documentation at `http://localhost:8000/docs`.
+
+## 🧹 Cleanup & Maintenance
+
+To keep development databases and uploads tidy, use the included cleanup utility:
+
+```bash
+python cleanup_computations.py
+```
+
+The script will:
+- Back up every SQLite database before making changes.
+- Delete completed/failed computations older than 30 days (or any leftover test runs).
+- Remove associated computation results, participant rows, and invitations.
+- Prune unreferenced files from `uploads/` and `backend/uploads/`.
+
+Backups are timestamped (`*_backup_before_cleanup_<timestamp>.db`). Only the most recent backup is kept; older copies can be removed once you confirm the clean state.
+
 
 ## 📈 Performance & Scalability
 

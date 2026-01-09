@@ -99,6 +99,26 @@ class Settings(BaseSettings):
     # Audit
     AUDIT_LOG_ENABLED: bool = True
     AUDIT_LOG_RETENTION_DAYS: int = 90
+
+    # LLM / Prompt Interpretation (optional)
+    # Options: "groq", "openai", "huggingface", "ollama", "heuristic"
+    # "groq" is FREE (14,400 requests/day) and recommended as default
+    # "heuristic" is FREE and requires no API keys (fallback)
+    LLM_PROVIDER: Optional[str] = os.environ.get("LLM_PROVIDER", "groq")
+    OPENAI_API_KEY: Optional[str] = os.environ.get("OPENAI_API_KEY")
+    OPENAI_MODEL: str = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+    
+    # Groq (FREE tier: 14,400 requests/day)
+    GROQ_API_KEY: Optional[str] = os.environ.get("GROQ_API_KEY")
+    GROQ_MODEL: str = os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
+    
+    # Hugging Face (FREE tier: 1,000 requests/month)
+    HUGGINGFACE_API_KEY: Optional[str] = os.environ.get("HUGGINGFACE_API_KEY")
+    HF_MODEL: str = os.environ.get("HF_MODEL", "mistralai/Mistral-7B-Instruct-v0.2")
+    
+    # Ollama (FREE, local, no API key needed)
+    OLLAMA_BASE_URL: str = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+    OLLAMA_MODEL: str = os.environ.get("OLLAMA_MODEL", "llama3.2")
     
     @validator("SECRET_KEY", pre=True, always=True)
     def generate_secret_key(cls, v):

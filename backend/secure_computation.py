@@ -15,9 +15,12 @@ import hashlib
 import os
 from decimal import Decimal, getcontext, InvalidOperation
 from websocket import smpc_manager
+import logging
 
 # Set precision for decimal calculations
 getcontext().prec = 28
+
+logger = logging.getLogger(__name__)
 
 class SecureComputationService:
     def __init__(self, db: Session):
@@ -444,25 +447,43 @@ class SecureComputationService:
             
             # Delete in the correct order to respect foreign key constraints
             
-            # 1. Delete computation invitations first
+            # 1. Delete variable column mappings (if they exist)
+            # These have a foreign key to computation_id, so must be deleted first
+            try:
+                from models import VariableColumnMapping
+                mappings_deleted = self.db.query(VariableColumnMapping).filter_by(computation_id=computation_id).delete()
+                print(f"Deleted {mappings_deleted} variable column mappings")
+            except Exception as e:
+                print(f"Warning: Could not delete variable column mappings (may not exist): {e}")
+            
+            # 2. Delete computation patient records (if they exist)
+            try:
+                from models import ComputationPatientRecord
+                patient_records_deleted = self.db.query(ComputationPatientRecord).filter_by(computation_id=computation_id).delete()
+                print(f"Deleted {patient_records_deleted} computation patient records")
+            except Exception as e:
+                print(f"Warning: Could not delete computation patient records (may not exist): {e}")
+            
+            # 3. Delete computation invitations
             invitations_deleted = self.db.query(ComputationInvitation).filter_by(computation_id=computation_id).delete()
             print(f"Deleted {invitations_deleted} invitations")
             
-            # 2. Delete computation results
+            # 4. Delete computation results
             results_deleted = self.db.query(ComputationResult).filter_by(computation_id=computation_id).delete()
             print(f"Deleted {results_deleted} results")
             
-            # 3. Delete computation participants
+            # 5. Delete computation participants
             participants_deleted = self.db.query(ComputationParticipant).filter_by(computation_id=computation_id).delete()
             print(f"Deleted {participants_deleted} participants")
             
-            # 4. Delete the computation itself
+            # 6. Delete the computation itself
             computation = self.db.query(SecureComputation).filter_by(computation_id=computation_id).first()
             if computation:
                 self.db.delete(computation)
                 print(f"Deleted computation: {computation.computation_id}")
             else:
                 print(f"Computation {computation_id} not found")
+                return False
                 
             self.db.commit()
             print(f"Successfully deleted computation {computation_id}")
@@ -836,6 +857,15 @@ class SecureComputationService:
             "completed_at": computation.completed_at.isoformat() if computation.completed_at else None,
             "security_method": self._get_security_method(computation.type)
         }
+        # Attach generic computation spec if present in parameters
+        try:
+            if computation.parameters and isinstance(computation.parameters, dict):
+                spec = computation.parameters.get("spec")
+                if spec is not None:
+                    response["spec"] = spec
+        except Exception:
+            # Do not fail result retrieval if parameters are malformed
+            pass
         
         # Add error information if in error state
         if computation.status == "error":
@@ -1137,18 +1167,28 @@ class SecureComputationService:
                 "secure_gwas", "pharmacogenomics"
             ]
             
-            # Process data based on computation type
+            # Check if computation has a spec (generic prompt-driven)
+            spec = None
+            if computation.parameters and isinstance(computation.parameters, dict):
+                spec = computation.parameters.get("spec")
+            
+            # Process data based on computation type or spec
             try:
-                # Check if we're using homomorphic encryption, SMPC, or both
-                print(f"Processing computation type: {computation_type}")
-                if computation_type in advanced_smpc_types:
-                    # These types use both homomorphic encryption and SMPC (hybrid)
-                    print("Using hybrid computation method")
-                    result = self._perform_secure_computation_hybrid(computation, results)
+                if spec and spec.get("operations"):
+                    # Use spec-based execution (generic prompt-driven)
+                    print(f"Processing computation using spec-based execution")
+                    result = self._perform_spec_based_computation(computation, results, spec)
                 else:
-                    # Other types use homomorphic encryption only
-                    print("Using homomorphic computation method")
-                    result = self._perform_secure_computation_homomorphic(computation_type, results)
+                    # Legacy: use computation type
+                    print(f"Processing computation type: {computation_type}")
+                    if computation_type in advanced_smpc_types:
+                        # These types use both homomorphic encryption and SMPC (hybrid)
+                        print("Using hybrid computation method")
+                        result = self._perform_secure_computation_hybrid(computation, results)
+                    else:
+                        # Other types use homomorphic encryption only
+                        print("Using homomorphic computation method")
+                        result = self._perform_secure_computation_homomorphic(computation_type, results)
                 
                 # Add metadata about the computation
                 result["data_points_count"] = result.get("count", 0)
@@ -1217,7 +1257,7 @@ class SecureComputationService:
         # Check if this is an advanced computation type that requires SMPC
         advanced_computations = self.advanced_smpc.get_available_computations()
         if computation_type in advanced_computations:
-            return self._perform_advanced_computation(computation_type, results)
+            return self._perform_advanced_computation(computation, results)
 
         # For basic computations (secure_sum, secure_mean, secure_average, secure_variance),
         # use homomorphic encryption data instead of SMPC shares
@@ -1536,9 +1576,514 @@ class SecureComputationService:
 
         return result
     
-    def _perform_advanced_computation(self, computation_type: str, results: List[ComputationResult]) -> Dict[str, Any]:
+    def _perform_spec_based_computation(
+        self,
+        computation: SecureComputation,
+        results: List[ComputationResult],
+        spec: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Perform computation based on a generic ComputationSpec.
+        
+        This method extracts variables and operations from the spec,
+        maps them to submitted data using VariableColumnMapping,
+        and executes the appropriate secure computation.
+        """
+        from models import VariableColumnMapping
+        
+        try:
+            # Extract variables and operations from spec
+            variables = spec.get("variables", [])
+            operations = spec.get("operations", [])
+            analysis_type = spec.get("analysis_type", "basic_statistics")
+            
+            if not operations:
+                raise ValueError("No operations specified in computation spec")
+            
+            # Get variable-to-column mappings for all participants
+            org_data = {}  # org_id -> {variable_id: [values]}
+            
+            for result in results:
+                org_id = result.org_id
+                if org_id not in org_data:
+                    org_data[org_id] = {}
+                
+                # Get confirmed mappings for this org
+                mappings = self.db.query(VariableColumnMapping).filter(
+                    VariableColumnMapping.computation_id == computation.computation_id,
+                    VariableColumnMapping.org_id == org_id,
+                    VariableColumnMapping.confirmed == True
+                ).all()
+                
+                # Extract data points (could be dict with variable keys or flat list)
+                data_points = result.data_points
+                if isinstance(data_points, dict):
+                    # Data is organized by variable/column
+                    for mapping in mappings:
+                        var_id = mapping.variable_id
+                        col_name = mapping.column_name
+                        if col_name in data_points:
+                            if var_id not in org_data[org_id]:
+                                org_data[org_id][var_id] = []
+                            values = data_points[col_name]
+                            if isinstance(values, list):
+                                org_data[org_id][var_id].extend(values)
+                            else:
+                                org_data[org_id][var_id].append(values)
+                else:
+                    # Legacy: single column/list - use first variable
+                    if variables and isinstance(data_points, list):
+                        var_id = variables[0].get("id") or variables[0].get("name", "value")
+                        if var_id not in org_data[org_id]:
+                            org_data[org_id][var_id] = []
+                        org_data[org_id][var_id].extend(data_points)
+            
+            # Execute operations based on spec
+            computation_results = {}
+            
+            for op in operations:
+                op_type = op.get("type", "").lower()
+                op_id = op.get("id", "main_operation")
+                
+                # Determine which variables to use
+                input_var = op.get("input")
+                x_var = op.get("x")
+                y_var = op.get("y")
+                
+                # Collect data for the operation
+                if op_type in ["secure_mean", "secure_average", "secure_sum", "secure_variance"]:
+                    # Single variable operation
+                    var_id = input_var or (variables[0].get("id") if variables else "value")
+                    all_values = []
+                    for org_id, var_data in org_data.items():
+                        if var_id in var_data:
+                            all_values.extend(var_data[var_id])
+                    
+                    if op_type == "secure_mean" or op_type == "secure_average":
+                        # Use existing secure computation
+                        temp_result = self._perform_secure_computation_homomorphic("secure_average", results)
+                        op_result = {
+                            "type": "mean",
+                            "value": temp_result.get("mean", 0),
+                            "count": temp_result.get("count", 0)
+                        }
+                        
+                        # Add threshold analysis if threshold is specified in options
+                        op_options = op.get("options", {})
+                        threshold_value = op_options.get("threshold")
+                        
+                        if threshold_value is not None:
+                            try:
+                                threshold_float = float(threshold_value)
+                                from models import ComputationPatientRecord
+                                
+                                # Get all patient records for this computation
+                                patient_records = self.db.query(ComputationPatientRecord).filter_by(
+                                    computation_id=computation.computation_id
+                                ).all()
+                                
+                                if patient_records:
+                                    # Filter patients above threshold
+                                    above_threshold_patients = []
+                                    for record in patient_records:
+                                        if record.value is not None:
+                                            record_value = float(record.value)
+                                            if record_value >= threshold_float:
+                                                above_threshold_patients.append({
+                                                    "patient_id": record.patient_id,
+                                                    "value": record_value,
+                                                    "org_id": record.org_id,
+                                                    "metric_name": record.metric_name,
+                                                    "above_threshold": True
+                                                })
+                                    
+                                    op_result["threshold_value"] = threshold_float
+                                    op_result["above_threshold_count"] = len(above_threshold_patients)
+                                    op_result["above_threshold_percentage"] = (
+                                        (len(above_threshold_patients) / len(patient_records)) * 100.0
+                                    ) if patient_records else 0.0
+                                    op_result["patients_above_threshold"] = above_threshold_patients
+                                    
+                                    # Add risk level classification
+                                    try:
+                                        from services.risk_stratification import RiskStratificationService
+                                        risk_service = RiskStratificationService()
+                                        
+                                        # Find risk thresholds for this metric
+                                        metric_name = var_id if var_id else "blood_sugar"
+                                        thresholds_cfg = None
+                                        for key, cfg in risk_service.risk_thresholds.items():
+                                            if key in metric_name.lower():
+                                                thresholds_cfg = cfg
+                                                break
+                                        
+                                        def classify_risk(val: float) -> str:
+                                            if not thresholds_cfg:
+                                                return "unknown"
+                                            very_high = thresholds_cfg.get("very_high", thresholds_cfg.get("high", val + 1))
+                                            high = thresholds_cfg.get("high", thresholds_cfg.get("low", 0))
+                                            low = thresholds_cfg.get("low", thresholds_cfg.get("high", 0))
+                                            if val > very_high:
+                                                return "very_high"
+                                            if val > high:
+                                                return "high"
+                                            if val < low:
+                                                return "low"
+                                            return "normal"
+                                        
+                                        # Add risk levels to patients
+                                        for patient in above_threshold_patients:
+                                            patient["risk_level"] = classify_risk(patient["value"])
+                                            
+                                            # Add consequences based on how far above threshold
+                                            val = patient["value"]
+                                            if val >= threshold_float + 20:
+                                                patient["consequences"] = (
+                                                    "Very high blood sugar far above the target range; "
+                                                    "there is increased risk of acute complications and long-term organ damage "
+                                                    "if this pattern persists. Urgent clinical review is recommended."
+                                                )
+                                            elif val >= threshold_float + 10:
+                                                patient["consequences"] = (
+                                                    "Blood sugar is significantly above the agreed threshold; "
+                                                    "this increases the risk of diabetes-related complications and requires "
+                                                    "timely treatment adjustment and closer monitoring."
+                                                )
+                                            else:
+                                                patient["consequences"] = (
+                                                    "Blood sugar is just above the threshold; "
+                                                    "early lifestyle and medication optimization can help prevent progression "
+                                                    "to more severe hyperglycemia."
+                                                )
+                                    except Exception as risk_exc:
+                                        logger.warning(f"Failed to add risk classification: {risk_exc}")
+                                        # Continue without risk classification
+                            
+                            except (TypeError, ValueError) as e:
+                                logger.warning(f"Invalid threshold value: {threshold_value}, error: {e}")
+                        
+                        computation_results[op_id] = op_result
+                    elif op_type == "secure_sum":
+                        temp_result = self._perform_secure_computation_homomorphic("secure_sum", results)
+                        computation_results[op_id] = {
+                            "type": "sum",
+                            "value": temp_result.get("sum", 0),
+                            "count": temp_result.get("count", 0)
+                        }
+                    elif op_type == "secure_variance":
+                        temp_result = self._perform_secure_computation_homomorphic("secure_variance", results)
+                        computation_results[op_id] = {
+                            "type": "variance",
+                            "value": temp_result.get("variance", 0),
+                            "count": temp_result.get("count", 0)
+                        }
+                
+                elif op_type == "secure_correlation":
+                    # Two variable operation
+                    if x_var and y_var:
+                        # Use advanced SMPC correlation
+                        computation_results[op_id] = self._perform_advanced_computation(
+                            computation, results
+                        )
+                    else:
+                        computation_results[op_id] = {"error": "Correlation requires x and y variables"}
+                
+                elif op_type in ["secure_regression", "cohort_analysis", "secure_survival", "categorical_filter", "anomaly_detection"]:
+                    # Use advanced computation methods
+                    # Handle anomaly detection
+                    if op_type == "anomaly_detection":
+                        # Collect all numeric values for anomaly detection
+                        all_values = []
+                        for org_id, var_data in org_data.items():
+                            for var_id, values in var_data.items():
+                                all_values.extend([float(v) for v in values if isinstance(v, (int, float))])
+                        
+                        if len(all_values) < 10:
+                            computation_results[op_id] = {
+                                "type": "anomaly_detection",
+                                "error": "Insufficient data for anomaly detection (need at least 10 data points)",
+                                "total_records": len(all_values),
+                                "anomalies_detected": 0
+                            }
+                        else:
+                            # Use advanced SMPC anomaly detection
+                            # Prepare data in the format expected by advanced_smpc
+                            all_shares = [[{"value": v} for v in all_values]]
+                            computation_results[op_id] = self.advanced_smpc.secure_anomaly_detection(all_shares)
+                            computation_results[op_id]["type"] = "anomaly_detection"
+                    # For categorical_filter, extract filters from options
+                    elif op_type == "categorical_filter" and op.get("options") and op["options"].get("filters"):
+                        filters = op["options"]["filters"]
+                        # Apply filters to patient records
+                        from models import ComputationPatientRecord
+                        patient_records = self.db.query(ComputationPatientRecord).filter_by(
+                            computation_id=computation.computation_id
+                        ).all()
+                        
+                        logger.info(f"Categorical filter: Found {len(patient_records)} patient records for computation {computation.computation_id}")
+                        if len(patient_records) == 0:
+                            error_msg = f"No patient records found for computation {computation.computation_id}. Data may not have been stored correctly during CSV upload. Please ensure CSV was uploaded with all columns."
+                            logger.error(error_msg)
+                            computation_results[op_id] = {
+                                "type": "categorical_filter",
+                                "filter_criteria": filters,
+                                "matching_patients": [],
+                                "count": 0,
+                                "error": error_msg
+                            }
+                            continue
+                        
+                        # Group records by patient_id to check all their attributes
+                        from collections import defaultdict
+                        patient_data = defaultdict(dict)
+                        for record in patient_records:
+                            patient_id = record.patient_id
+                            if record.metric_name:
+                                # Handle categorical data stored as "COLUMN_NAME:VALUE"
+                                if ":" in record.metric_name:
+                                    col_name, col_value = record.metric_name.split(":", 1)
+                                    patient_data[patient_id][col_name] = col_value
+                                else:
+                                    # Numeric data
+                                    patient_data[patient_id][record.metric_name] = record.value
+                            # Also store org_id for each patient
+                            if "org_id" not in patient_data[patient_id]:
+                                patient_data[patient_id]["org_id"] = record.org_id
+                        
+                        logger.info(f"Grouped patient data: {len(patient_data)} unique patients with attributes: {list(patient_data.values())[0].keys() if patient_data else 'none'}")
+                        
+                        # Log available columns for debugging
+                        if patient_data:
+                            sample_attrs = list(patient_data.values())[0]
+                            logger.info(f"Sample patient attributes: {list(sample_attrs.keys())}")
+                            logger.info(f"Filter keys to match: {list(filters.keys())}")
+                        
+                        filtered_patients = []
+                        for patient_id, patient_attrs in patient_data.items():
+                            match = True
+                            
+                            # Apply ALL filters dynamically - generic filter engine
+                            for filter_key, filter_value in filters.items():
+                                logger.debug(f"Applying filter: {filter_key} = {filter_value} for patient {patient_id}")
+                                if not match:
+                                    break  # Short-circuit if already failed
+                                
+                                # Use intelligent column matcher with learning capabilities
+                                patient_value = None
+                                
+                                # Get available column names from patient attributes
+                                available_columns = list(patient_attrs.keys())
+                                
+                                # Use intelligent matcher with database session for learning
+                                try:
+                                    from services.intelligent_column_matcher import IntelligentColumnMatcher
+                                    # Pass database session so matcher can learn from past matches
+                                    matcher = IntelligentColumnMatcher(db_session=self.db)
+                                    match_result = matcher.find_best_match(filter_key, available_columns, min_confidence=0.4)
+                                    
+                                    if match_result:
+                                        matched_column, confidence, reason = match_result
+                                        patient_value = patient_attrs.get(matched_column)
+                                        logger.info(f"Intelligent match: '{filter_key}' -> '{matched_column}' "
+                                                   f"(confidence: {confidence:.2f}, reason: {reason})")
+                                        
+                                        # Learn from successful match (will be confirmed if computation succeeds)
+                                        # The matcher already learns automatically, but we can boost confidence
+                                        # if this match leads to successful results
+                                    else:
+                                        # Fallback: try exact case-insensitive match
+                                        for attr_key, attr_val in patient_attrs.items():
+                                            if attr_key.lower() == filter_key.lower():
+                                                patient_value = patient_attrs.get(attr_key)
+                                                logger.debug(f"Fallback exact match: '{filter_key}' -> '{attr_key}'")
+                                                break
+                                except Exception as match_err:
+                                    logger.warning(f"Error in intelligent matching: {match_err}, using fallback")
+                                    # Fallback to simple case-insensitive match
+                                    for attr_key, attr_val in patient_attrs.items():
+                                        if attr_key.lower() == filter_key.lower():
+                                            patient_value = attr_val
+                                            break
+                                
+                                # Log if we found the value or not
+                                if patient_value is not None:
+                                    logger.debug(f"Found value for {filter_key}: {patient_value} (type: {type(patient_value)})")
+                                else:
+                                    logger.warning(f"Could not find column matching filter key '{filter_key}' "
+                                                 f"in patient attributes: {available_columns}")
+                                
+                                # Apply filter based on filter_value type
+                                if isinstance(filter_value, dict):
+                                    # Complex filter with operator
+                                    if "operator" in filter_value:
+                                        op = filter_value["operator"]
+                                        filter_val = filter_value["value"]
+                                        
+                                        if patient_value is None:
+                                            match = False
+                                            continue
+                                        
+                                        # Convert patient_value for comparison
+                                        try:
+                                            # Handle "in" operator (check if value is in a list)
+                                            if op == "in":
+                                                # filter_val should be a list
+                                                if isinstance(filter_val, list):
+                                                    # Check if patient_value matches any value in the list (case-insensitive)
+                                                    patient_val_str = str(patient_value).strip().upper()
+                                                    filter_vals_upper = [str(v).strip().upper() for v in filter_val]
+                                                    if patient_val_str not in filter_vals_upper:
+                                                        match = False
+                                                else:
+                                                    # If filter_val is not a list, treat as single value
+                                                    if str(patient_value).strip().upper() != str(filter_val).strip().upper():
+                                                        match = False
+                                            # Handle equality operator for strings
+                                            elif op == "=" or op == "==":
+                                                # Simple string equality (case-insensitive)
+                                                if str(patient_value).strip().lower() != str(filter_val).strip().lower():
+                                                    match = False
+                                            elif (
+                                                filter_key == "age"
+                                                or "age" in filter_key.lower()
+                                                or "blood_sugar" in filter_key.lower()
+                                                or "glucose" in filter_key.lower()
+                                            ):
+                                                patient_num = float(patient_value)
+                                                filter_num = float(filter_val)
+                                                if op == "<" and patient_num >= filter_num:
+                                                    match = False
+                                                elif op == ">" and patient_num <= filter_num:
+                                                    match = False
+                                                elif op == "<=" and patient_num > filter_num:
+                                                    match = False
+                                                elif op == ">=" and patient_num < filter_num:
+                                                    match = False
+                                            elif "date" in filter_key.lower():
+                                                # Date comparison (simplified - assumes ISO format)
+                                                # Use datetime from module import
+                                                from datetime import datetime as dt_module
+                                                try:
+                                                    patient_date = dt_module.fromisoformat(str(patient_value).split()[0])
+                                                    filter_date = dt_module.fromisoformat(str(filter_val).split()[0])
+                                                    if op == "<" and patient_date >= filter_date:
+                                                        match = False
+                                                    elif op == ">" and patient_date <= filter_date:
+                                                        match = False
+                                                    elif op == "<=" and patient_date > filter_date:
+                                                        match = False
+                                                    elif op == ">=" and patient_date < filter_date:
+                                                        match = False
+                                                except Exception:
+                                                    # Fallback to string comparison
+                                                    if op == "<=" and str(patient_value) > str(filter_val):
+                                                        match = False
+                                                    elif op == ">=" and str(patient_value) < str(filter_val):
+                                                        match = False
+                                        except (ValueError, TypeError):
+                                            match = False
+                                    
+                                    elif "min" in filter_value or "max" in filter_value:
+                                        # Range filter
+                                        if patient_value is None:
+                                            match = False
+                                            continue
+                                        try:
+                                            patient_num = float(patient_value)
+                                            if "min" in filter_value and patient_num < float(filter_value["min"]):
+                                                match = False
+                                            if "max" in filter_value and patient_num > float(filter_value["max"]):
+                                                match = False
+                                        except (ValueError, TypeError):
+                                            match = False
+                                
+                                else:
+                                    # Simple equality filter (string or exact match)
+                                    if patient_value is None:
+                                        match = False
+                                        continue
+                                    
+                                    # Case-insensitive string comparison
+                                    if str(patient_value).strip().lower() != str(filter_value).strip().lower():
+                                        # Also try partial match for conditions
+                                        if filter_key in ["condition", "diagnosis", "admission_reason"]:
+                                            if str(filter_value).lower() not in str(patient_value).lower():
+                                                match = False
+                                        else:
+                                            match = False
+                            
+                            if match:
+                                # Include all patient attributes in the result
+                                filtered_patients.append({
+                                    "patient_id": patient_id,
+                                    "org_id": patient_attrs.get("org_id"),
+                                    **{k: v for k, v in patient_attrs.items() if k != "org_id"}  # Include all other attributes
+                                })
+                        
+                        logger.info(f"Filter applied: {filters}, Found {len(filtered_patients)} matching patients out of {len(patient_data)} total patients")
+                        if len(filtered_patients) == 0 and len(patient_data) > 0:
+                            # Log sample patient data to help debug filter issues
+                            sample_patient = list(patient_data.values())[0]
+                            logger.warning(f"Filter returned 0 matches. Sample patient data: {sample_patient}")
+                            logger.warning(f"Filter criteria: {filters}")
+                        
+                        # Learn from successful filter matches - store mappings for future use
+                        if len(filtered_patients) > 0:
+                            try:
+                                from services.intelligent_column_matcher import IntelligentColumnMatcher
+                                matcher = IntelligentColumnMatcher(db_session=self.db)
+                                
+                                # For each filter that successfully matched, learn the mapping
+                                for filter_key in filters.keys():
+                                    # Find which column was matched (from earlier in the loop)
+                                    # We'll learn this when we actually use the match
+                                    pass  # Learning happens during matching phase above
+                            except Exception as learn_err:
+                                logger.debug(f"Could not learn from filter matches: {learn_err}")
+                        
+                        computation_results[op_id] = {
+                            "type": "categorical_filter",
+                            "filter_criteria": filters,
+                            "matching_patients": filtered_patients,
+                            "count": len(filtered_patients)
+                        }
+                    else:
+                        computation_results[op_id] = self._perform_advanced_computation(
+                            computation, results
+                        )
+                
+                else:
+                    # Fallback: basic statistics
+                    temp_result = self._perform_secure_computation_homomorphic("basic_statistics", results)
+                    computation_results[op_id] = temp_result
+            
+            # Build final result
+            final_result = {
+                "spec_based": True,
+                "analysis_type": analysis_type,
+                "research_question": spec.get("research_question"),
+                "operations": computation_results,
+                "variables_used": [v.get("id") or v.get("name") for v in variables],
+                "participants_count": len(org_data),
+                "timestamp": datetime.utcnow().isoformat()
+            }
+            
+            return final_result
+        
+        except Exception as e:
+            logger.error(f"Error in spec-based computation: {e}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "error": f"Spec-based computation failed: {str(e)}",
+                "spec_based": True
+            }
+    
+    def _perform_advanced_computation(self, computation: SecureComputation, results: List[ComputationResult]) -> Dict[str, Any]:
         """Perform advanced SMPC computations"""
         try:
+            computation_type = computation.type.lower()
+            parameters: Dict[str, Any] = computation.parameters or {}
             # Extract shares for advanced computation
             all_shares = []
             for result in results:
@@ -1565,8 +2110,8 @@ class SecureComputationService:
             elif computation_type == "anomaly_detection":
                 computation_result = self.advanced_smpc.secure_anomaly_detection(all_shares)
             elif computation_type == "cohort_analysis":
-                # Would need criteria from computation parameters
-                criteria = {"age_min": 18, "condition": "diabetes"}  # Example
+                # Use criteria from computation parameters if provided via generic spec
+                criteria = parameters.get("criteria") or {"age_min": 18, "condition": "diabetes"}
                 computation_result = self.advanced_smpc.secure_cohort_analysis(all_shares, criteria)
             elif computation_type == "drug_safety":
                 computation_result = self.advanced_smpc.secure_drug_safety_analysis(all_shares)

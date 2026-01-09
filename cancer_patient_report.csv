@@ -1,0 +1,36 @@
+Patient_ID,Age,Gender,Cancer_Type,Stage,Diagnosis_Date,Treatment,Outcome
+P001,31,Female,Breast,I,2023-01-01,Chemotherapy,Improving
+P002,32,Male,Lung,II,2023-01-16,Radiation,Stable
+P003,33,Female,Colon,III,2023-01-31,Surgery,Recovering
+P004,34,Male,Prostate,IV,2023-02-15,Immunotherapy,Critical
+P005,35,Female,Leukemia,II,2023-03-02,Hormone Therapy,Stable
+P006,36,Male,Breast,I,2023-03-17,Chemotherapy,Improving
+P007,37,Female,Lung,II,2023-04-01,Radiation,Stable
+P008,38,Male,Colon,III,2023-04-16,Surgery,Recovering
+P009,39,Female,Prostate,IV,2023-05-01,Immunotherapy,Critical
+P010,40,Male,Leukemia,II,2023-05-16,Hormone Therapy,Stable
+P011,41,Female,Breast,I,2023-05-31,Chemotherapy,Improving
+P012,42,Male,Lung,II,2023-06-15,Radiation,Stable
+P013,43,Female,Colon,III,2023-06-30,Surgery,Recovering
+P014,44,Male,Prostate,IV,2023-07-15,Immunotherapy,Critical
+P015,45,Female,Leukemia,II,2023-07-30,Hormone Therapy,Stable
+P016,46,Male,Breast,I,2023-08-14,Chemotherapy,Improving
+P017,47,Female,Lung,II,2023-08-29,Radiation,Stable
+P018,48,Male,Colon,III,2023-09-13,Surgery,Recovering
+P019,49,Female,Prostate,IV,2023-09-28,Immunotherapy,Critical
+P020,50,Male,Leukemia,II,2023-10-13,Hormone Therapy,Stable
+P021,51,Female,Breast,I,2023-10-28,Chemotherapy,Improving
+P022,52,Male,Lung,II,2023-11-12,Radiation,Stable
+P023,53,Female,Colon,III,2023-11-27,Surgery,Recovering
+P024,54,Male,Prostate,IV,2023-12-12,Immunotherapy,Critical
+P025,55,Female,Leukemia,II,2023-12-27,Hormone Therapy,Stable
+P026,56,Male,Breast,I,2024-01-11,Chemotherapy,Improving
+P027,57,Female,Lung,II,2024-01-26,Radiation,Stable
+P028,58,Male,Colon,III,2024-02-10,Surgery,Recovering
+P029,59,Female,Prostate,IV,2024-02-25,Immunotherapy,Critical
+P030,60,Male,Leukemia,II,2024-03-11,Hormone Therapy,Stable
+P031,61,Female,Breast,I,2024-03-26,Chemotherapy,Improving
+P032,62,Male,Lung,II,2024-04-10,Radiation,Stable
+P033,63,Female,Colon,III,2024-04-25,Surgery,Recovering
+P034,64,Male,Prostate,IV,2024-05-10,Immunotherapy,Critical
+P035,65,Female,Leukemia,II,2024-05-25,Hormone Therapy,Stable

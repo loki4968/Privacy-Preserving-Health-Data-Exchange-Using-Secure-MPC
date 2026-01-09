@@ -345,6 +345,46 @@ class SecureComputationResult(Base):
         return self.encryption_manager.decrypt_data(self.encrypted_result)
 
 
+class DatasetDescriptor(Base):
+    """Model for storing dataset metadata and schema information for automatic column mapping."""
+    __tablename__ = "dataset_descriptors"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    name = Column(String(255), nullable=False)
+    description = Column(String(1000))
+    file_path = Column(String(500))  # Path to uploaded CSV/data file
+    schema = Column(JSON, nullable=False)  # List of ColumnDescriptor dicts
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    is_active = Column(Boolean, default=True, nullable=False)
+    
+    # Relationships
+    organization = relationship("Organization")
+    variable_mappings = relationship("VariableColumnMapping", back_populates="dataset", cascade="all, delete-orphan")
+
+
+class VariableColumnMapping(Base):
+    """Maps computation spec variables to dataset columns for each participant."""
+    __tablename__ = "variable_column_mappings"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    computation_id = Column(String, ForeignKey('secure_computations.computation_id'), nullable=False, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    dataset_id = Column(Integer, ForeignKey("dataset_descriptors.id"), nullable=True)
+    variable_id = Column(String, nullable=False)  # From ComputationSpecVariable.id
+    column_name = Column(String(255), nullable=False)  # Actual column name in dataset
+    confidence_score = Column(Float)  # 0.0-1.0, how confident the auto-mapping was
+    mapping_method = Column(String(50))  # 'auto', 'manual', 'llm', 'semantic'
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    confirmed = Column(Boolean, default=False, nullable=False)  # Whether user confirmed the mapping
+    
+    # Relationships
+    computation = relationship("SecureComputation")
+    organization = relationship("Organization")
+    dataset = relationship("DatasetDescriptor", back_populates="variable_mappings")
+
+
 class ReportRequestStatus(enum.Enum):
     """Status of a report request."""
     PENDING = "pending"

@@ -13,7 +13,7 @@ import {
   Legend,
 } from 'chart.js';
 import MLService from '../services/MLService';
-import { useAuth } from '../contexts/AuthContext';
+import { useAuth } from '../context/AuthContext';
 
 // Register ChartJS components
 ChartJS.register(
