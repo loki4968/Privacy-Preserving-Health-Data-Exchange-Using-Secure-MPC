@@ -39,3 +39,33 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# =========================
+# Python / FastAPI ignores
+# =========================
+.venv/
+venv/
+env/
+
+__pycache__/
+**/__pycache__/
+
+*.pyc
+*.pyo
+*.pyd
+
+*.db
+*.sqlite
+*.sqlite3
+*.log
+
+backend/logs/
+backend/*.db
+backend/*.db-shm
+backend/*.db-wal
+
+# =========================
+# OS
+# =========================
+Thumbs.db
+.DS_Store
